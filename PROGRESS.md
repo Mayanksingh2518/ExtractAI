@@ -151,7 +151,7 @@ uvicorn app.main:app --reload          # then in another terminal: curl http://1
 | Machine | Specs | Model | Concurrency | Notes |
 |---|---|---|---|---|
 | Old laptop | 2 GB GPU | `qwen3-vl:4b` (planned) | 1 | Stage 1 was done here |
-| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (download in progress; `qwen3-vl:8b` already installed) | 2 (to be benchmarked) | Stage 2 was done here. 8b runs 100% on the GPU, about 7 GB |
+| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` also installed) | 2 (to be benchmarked) | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
 
 ---
 
@@ -170,7 +170,7 @@ Items are ticked only once they have been **built and tested**.
 - [x] **Tested:** installed versions are fastapi 0.141.1, pydantic 2.13.5 and pymupdf 1.28.2
 - [x] **Tested:** `uvicorn app.main:app` starts, and `GET /` returns 200 with the expected JSON
 
-### Stage 2: Ollama service ✅ (one follow-up left, see section 7)
+### Stage 2: Ollama service ✅
 - [x] Ollama installed (Homebrew, v0.14.1) and running on `localhost:11434`
 - [x] Downloaded `qwen3-vl:8b` (6.1 GB). It has vision support and runs 100% on the GPU
 - [x] `scripts/make_sample_documents.py` generates a **fake** passport image at `documents/sample_passport.png` ("Republic of Testland", John Doe, AB1234567)
@@ -187,7 +187,8 @@ Items are ticked only once they have been **built and tested**.
 - [x] **Tested a model that isn't installed** (`OLLAMA_MODEL=does-not-exist`): `OllamaError: Ollama returned HTTP 404`
 - [x] README written. Code pushed to GitHub and the repo made **public** (https://github.com/Mayanksingh2518/ExtractAI). Git history checked: `.env` and `documents/` were never committed
 - [x] `CLAUDE.md` and this `PROGRESS.md` added so work can resume on any machine
-- [ ] Switch to `qwen3-vl:8b-instruct` and compare its speed. **Next action, see section 7**
+- [x] Switched `.env` to `qwen3-vl:8b-instruct`
+- [x] **Tested speed against `8b`:** each model was run on 4 different fake passports (names changed so nothing was cached). Both read every name correctly. `8b-instruct` took 7.6–7.9 s per document once loaded (14 s when loading); `8b` took 21.5–27.4 s (26 s when loading). **Instruct is about 3× faster**
 
 #### What the Stage 2 tests showed
 
@@ -197,10 +198,12 @@ Items are ticked only once they have been **built and tested**.
 | Ollama's default context window is 4096 tokens, and one small image already used about 1,400 | Set `num_ctx: 8192` (`OLLAMA_NUM_CTX`). Otherwise large PDF pages are cut off **without any error**. Keep this in mind when choosing the PDF render DPI in Stage 5 |
 | `qwen3-vl:8b` ignores `think: false` and still writes about 630 characters of reasoning | Still usable, because the reasoning comes back in a separate field. Switching to `qwen3-vl:8b-instruct` for speed |
 | Pydantic's enum and `str \| None` schemas (`$defs`, `anyOf`) | Ollama accepts them, so the schemas can be passed in directly |
-| Timing on the M4 with `8b`: about 6 s to load the first time, then about 13–20 s per document (image processing about 7 s, generation about 4 s) | Starting point for tuning in Stage 11 |
+| Timing on the M4: `8b-instruct` about 7.7 s per document, `8b` about 21–27 s | We use `8b-instruct`. Starting point for tuning in Stage 11 |
+| Sending the **same** image twice took only 1.7 s the second time, because Ollama reused its work from the first request | **Benchmarks must use different images each time**, or the numbers come out too fast |
 
-### Stage 3: `POST /document-check` with validation of at least 10 URLs ⬜
-- [ ] `app/schemas/request.py`: `DocumentCheckRequest` with `documentUrls: list[HttpUrl]` and `min_length=10`
+### Stage 3: `POST /document-check` with validation of at least 10 URLs 🔄 (in progress)
+- [x] `app/schemas/request.py`: `DocumentCheckRequest` with `documentUrls: list[HttpUrl]`, `min_length=10` (`MIN_DOCUMENTS`), `max_length=50` (`MAX_DOCUMENTS`, added so one request can't queue unlimited work), and `extra="forbid"`
+- [x] **Tested the schema directly with Pydantic:** 10 URLs are accepted. Each of these is rejected: 9 URLs (`too_short`), 60 URLs (`too_long`), `"not-a-url"` (`url_parsing`), `ftp://` (`url_scheme`), a missing `documentUrls` (`missing`), and an extra field `foo` (`extra_forbidden`)
 - [ ] `app/api/document_check.py`: an `APIRouter` with `POST /document-check`, included in `app/main.py`. For now it just echoes the number of URLs back
 - [ ] Tests (curl or `/docs`): 10 URLs → 200; 9 URLs → 422; a URL that isn't valid → 422; `documentUrls` missing → 422
 
@@ -258,6 +261,7 @@ Items are ticked only once they have been **built and tested**.
 app/main.py                    FastAPI app + GET /
 app/config.py                  Settings from .env (get_settings)
 app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
+app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake documents/sample_passport.png
 scripts/test_ollama.py         manual check of the Ollama service
@@ -270,10 +274,10 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stage 2 is done and pushed. On the M4 Mac, `qwen3-vl:8b-instruct` was still downloading when this was last updated.
+**Status:** Stage 2 is done, and the model is now `qwen3-vl:8b-instruct`. Stage 3 is in progress: the request schema is written and tested, but there's no API route yet.
 
 **Next action:**
-1. Make sure `qwen3-vl:8b-instruct` is pulled (`ollama list`), and set `OLLAMA_MODEL=qwen3-vl:8b-instruct` in `.env`.
-2. Run `python -m scripts.test_ollama documents/sample_passport.png`. Confirm the result is correct and compare the time with `8b` (about 13 s). Record the result in section 5 and tick the last item in Stage 2.
-3. If `8b-instruct` works well, you can remove `qwen3-vl:8b` to free 6 GB (`ollama rm qwen3-vl:8b`). **Ask the user first.**
-4. Start **Stage 3, step 1**: create `app/schemas/request.py`.
+1. **Stage 3, step 2:** create `app/api/document_check.py`, an `APIRouter` with `POST /document-check` that takes `DocumentCheckRequest` and, for now, returns `{"received": <number of URLs>}`. Register it in `app/main.py` with `app.include_router(...)`.
+2. Test it over HTTP with curl: 10 URLs → 200; 9 URLs → 422; an invalid URL → 422; `documentUrls` missing → 422. Also check that it appears in `/docs`.
+3. Tick Stage 3, update this section, and offer to commit and push.
+4. Waiting on the user: should `qwen3-vl:8b` be removed with `ollama rm qwen3-vl:8b` to free 6 GB? It isn't needed now that we use `8b-instruct`.
