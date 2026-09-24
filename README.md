@@ -63,7 +63,9 @@ app/
 ├── pipelines/         # Per-document-type extraction + registry (planned)
 └── utils/             # PDF -> image conversion (planned)
 scripts/
-└── test_ollama.py     # Manual check for the Ollama service
+├── make_sample_documents.py  # Generates FAKE test documents into documents/
+└── test_ollama.py            # Manual check for the Ollama service
+PROGRESS.md            # Detailed progress, decisions and next steps
 ```
 
 ## Setup (macOS)
@@ -119,9 +121,10 @@ uvicorn app.main:app --reload
 
 ### Test the Ollama service on its own
 
-Put a test image in `documents/` (the folder is gitignored), then run:
+Generate a fake sample document into `documents/` (gitignored), then run the check:
 
 ```zsh
+python -m scripts.make_sample_documents
 python -m scripts.test_ollama documents/sample_passport.png
 ```
 
