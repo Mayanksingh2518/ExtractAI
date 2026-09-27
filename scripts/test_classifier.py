@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 
 from app.config import get_settings
-from app.schemas.classification import DocumentType
-from app.services.classifier import ClassificationError, DocumentClassifier
+from app.schemas.classification import Classification, DocumentType
+from app.services.classifier import ClassificationError, DocumentClassifier, check_type_against_name
 from app.services.ollama import OllamaClient
 from app.utils.pdf import to_page_images
 from app.utils.workspace import request_workspace
@@ -31,6 +31,33 @@ CASES = [
     ("sample_passport_no_name.png", DocumentType.PASSPORT, None),  # name fields blank -> null
 ]
 
+# Offline checks of the name cross-check: (model's documentName, model's type, expected final type)
+CROSS_CHECKS = [
+    ("Aadhaar card", DocumentType.AADHAAR, DocumentType.AADHAAR),
+    ("AADHAR", DocumentType.AADHAAR, DocumentType.AADHAAR),
+    ("UIDAI e-Aadhaar letter", DocumentType.AADHAAR, DocumentType.AADHAAR),
+    ("Permanent Account Number Card", DocumentType.AADHAAR, DocumentType.UNKNOWN),
+    ("Voter ID card", DocumentType.AADHAAR, DocumentType.UNKNOWN),
+    (None, DocumentType.AADHAAR, DocumentType.UNKNOWN),  # can't confirm Aadhaar -> don't guess
+    ("PAN card", DocumentType.TAX_RETURN, DocumentType.UNKNOWN),
+    ("Permanent Account Number Card", DocumentType.TAX_RETURN, DocumentType.UNKNOWN),
+    ("ITR-V Acknowledgement", DocumentType.TAX_RETURN, DocumentType.TAX_RETURN),
+    ("2025 Income tax return", DocumentType.TAX_RETURN, DocumentType.TAX_RETURN),
+    ("Travel Document", DocumentType.PASSPORT, DocumentType.PASSPORT),  # passports are not checked
+    ("Grocery receipt", DocumentType.UNKNOWN, DocumentType.UNKNOWN),
+]
+
+
+def run_cross_checks() -> int:
+    passed = 0
+    for doc_name, model_type, expected in CROSS_CHECKS:
+        before = Classification(documentName=doc_name, documentType=model_type, ownerName="X")
+        after = check_type_against_name(before)
+        ok = after.documentType is expected and after.ownerName == "X" and after.documentName == before.documentName
+        passed += ok
+        print(f"{'PASS' if ok else 'FAIL'}  cross-check {doc_name!r:34} {model_type.value:9} -> {after.documentType.value}")
+    return passed
+
 
 def _same_name(actual: str | None, expected: object) -> bool:
     if expected is ANY:
@@ -42,7 +69,8 @@ def _same_name(actual: str | None, expected: object) -> bool:
 
 async def main() -> None:
     settings = get_settings()
-    passed = 0
+    passed = run_cross_checks()
+    print()
     async with OllamaClient.from_settings(settings) as ollama:
         classifier = DocumentClassifier(ollama)
         for name, expected_type, expected_owner in CASES:
@@ -70,7 +98,7 @@ async def main() -> None:
             passed += 1
             print(f"PASS  {label:30} ClassificationError: {exc}")
     await down.aclose()
-    print(f"\n{passed}/{len(CASES) + 2} passed")
+    print(f"\n{passed}/{len(CROSS_CHECKS) + len(CASES) + 2} passed")
 
 
 if __name__ == "__main__":

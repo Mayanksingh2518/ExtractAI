@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from app.schemas.classification import Classification
+from app.schemas.classification import Classification, DocumentType
 from app.services.ollama import OllamaClient, OllamaError
 
 SYSTEM_PROMPT = (
@@ -32,8 +32,26 @@ taxpayer), given names then surname. Do not include labels, numbers, dates, rela
 (S/O, D/O, W/O, father's name) or the issuing authority. null if no holder name is visible."""
 
 
+AADHAAR_MARKERS = ("aadhaar", "aadhar", "uidai")
+PAN_MARKERS = ("permanent account number", "pan card")
+
+
 class ClassificationError(Exception):
     """The document could not be classified. Messages never include document content."""
+
+
+def check_type_against_name(result: Classification) -> Classification:
+    """Downgrade the model's documentType to unknown when its own documentName contradicts it.
+
+    The model names documents reliably ("Permanent Account Number Card") but reads the
+    idCard enum as "any ID card", so the name is used as a cross-check.
+    """
+    name = (result.documentName or "").casefold()
+    wrong_id_card = result.documentType is DocumentType.AADHAAR and not any(m in name for m in AADHAAR_MARKERS)
+    pan_as_tax_return = result.documentType is DocumentType.TAX_RETURN and any(m in name for m in PAN_MARKERS)
+    if wrong_id_card or pan_as_tax_return:
+        return result.model_copy(update={"documentType": DocumentType.UNKNOWN})
+    return result
 
 
 class DocumentClassifier:
@@ -46,7 +64,7 @@ class DocumentClassifier:
         if not page_images:
             raise ClassificationError("no page images to classify")
         try:
-            return await self._ollama.generate_structured(
+            result = await self._ollama.generate_structured(
                 Classification,
                 CLASSIFY_PROMPT,
                 page_images[: self._max_pages],
@@ -54,3 +72,4 @@ class DocumentClassifier:
             )
         except OllamaError as exc:
             raise ClassificationError(f"classification failed: {exc}") from exc
+        return check_type_against_name(result)
