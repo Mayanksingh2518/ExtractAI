@@ -20,6 +20,7 @@ class Settings:
     max_redirects: int
     pdf_render_dpi: int
     max_pdf_pages: int
+    max_concurrent_documents: int
 
 
 @lru_cache
@@ -36,4 +37,5 @@ def get_settings() -> Settings:
         max_redirects=int(os.getenv("MAX_REDIRECTS", "3")),
         pdf_render_dpi=int(os.getenv("PDF_RENDER_DPI", "100")),
         max_pdf_pages=int(os.getenv("MAX_PDF_PAGES", "10")),
+        max_concurrent_documents=max(1, int(os.getenv("MAX_CONCURRENT_DOCUMENTS", "2"))),
     )

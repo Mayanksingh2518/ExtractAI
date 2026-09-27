@@ -1,5 +1,6 @@
 """Runs the full flow for one request: download -> pages -> classify -> extract -> group by owner."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,13 +38,29 @@ class DocumentProcessor:
         self._registry = registry
         self._dpi = settings.pdf_render_dpi
         self._max_pages = settings.max_pdf_pages
+        # Shared by every request, so N concurrent API calls still never put more than this many
+        # documents in flight (and never flood Ollama). Covers the whole document, download to extract.
+        self._slots = asyncio.Semaphore(settings.max_concurrent_documents)
 
     async def process(self, urls: list[str]) -> list[OwnerResult]:
-        """Process every URL (one failure never stops the others), then group the results by owner."""
+        """Process every URL concurrently (one failure never stops the others), then group the results by owner."""
         with request_workspace() as workspace:
-            processed = [await self._process_one(index, url, workspace) for index, url in enumerate(urls)]
+            # gather returns results in input order, whatever order the documents finish in.
+            processed = await asyncio.gather(
+                *(self._process_limited(index, url, workspace) for index, url in enumerate(urls))
+            )
         groups = group_by_owner(processed, lambda doc: doc.ownerName)
         return [OwnerResult(ownerName=g.ownerName, documents=[doc.result for doc in g.documents]) for g in groups]
+
+    async def _process_limited(self, index: int, url: str, workspace: Path) -> ProcessedDocument:
+        # Never raises: an exception here would make gather() return early and delete the
+        # workspace while other documents are still using it.
+        async with self._slots:
+            try:
+                return await self._process_one(index, url, workspace)
+            except Exception as exc:
+                logger.error("Document %d: unexpected %s", index, type(exc).__name__)
+                return self._failed(index, "internal error", log=False)
 
     async def _process_one(self, index: int, url: str, workspace: Path) -> ProcessedDocument:
         doc_dir = workspace / f"doc{index:02d}"  # one folder per document, so page file names never collide

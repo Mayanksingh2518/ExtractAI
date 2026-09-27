@@ -152,7 +152,7 @@ uvicorn app.main:app --reload          # then in another terminal: curl http://1
 | Machine | Specs | Model | Concurrency | Notes |
 |---|---|---|---|---|
 | Old laptop | 2 GB GPU | `qwen3-vl:4b` (planned) | 1 | Stage 1 was done here |
-| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` removed 2026-09-27) | 2 (to be benchmarked) | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
+| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` removed 2026-09-27) | 2 (benchmarked in Stage 11: 1, 2 and 3 perform the same, because Ollama runs qwen3-vl one request at a time) | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
 
 ---
 
@@ -386,10 +386,42 @@ Items are ticked only once they have been **built and tested**.
 | A repeated URL was classified in 1.7 s (Ollama reused its cached work) | Same as Stage 2: benchmarks must use different images |
 | `TestClient` runs the app on a separate event loop, which can't share our async Ollama client | The test uses `httpx.ASGITransport` on the same loop instead |
 
-### Stage 11: Concurrency ⬜
-- [ ] `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS)`, set from `.env`
-- [ ] Benchmark 10 documents at concurrency 1, 2 and 3, together with `OLLAMA_NUM_PARALLEL`, and watch memory with `ollama ps`
-- [ ] Record the best value for each machine in section 4
+### Stage 11: Concurrency ✅
+- [x] `MAX_CONCURRENT_DOCUMENTS` (default 2; values below 1 become 1) in config, `.env.example` and `.env`
+- [x] `DocumentProcessor.process`: `asyncio.gather` over all documents, each inside `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS)`. `gather` keeps results in input order
+  - **Decision: one semaphore shared by all requests**, created once in the processor at startup. Two simultaneous API calls still never put more than N documents in flight (a separate semaphore per request would double the load on Ollama)
+  - **Decision: the semaphore covers the whole document** (download → pages → classify → extract), not only the Ollama calls. That also limits temporary files and memory; downloads take about 1 s compared with about 20 s of inference
+  - `_process_limited` never raises (any escaping exception → `internal error`). Otherwise `gather` would return early and the workspace would be deleted while other documents were still using it
+- [x] **Tested with `python -m scripts.test_concurrency`: 17/17 pass** (fakes with random delays, no Ollama)
+  - Limits 1, 2, 3 and 5: at most N in flight, and N is reached (limit 1: 1.50 s, 2: 0.86 s, 3: 0.57 s, 5: 0.41 s)
+  - Two simultaneous requests on one processor with limit 2 → still at most 2 in flight (20 documents)
+  - Same result at limit 1 and limit 3, even though documents finish out of order; groups in first-seen order; documents in input order
+  - 2 download errors + 1 crash among 10 → exactly those 3 have errors, 7 are fine; slots are freed after failures
+  - An exception escaping `_process_one` → `internal error`, and the other 9 complete
+  - Cancelled request (client disconnect): 2 of 10 had started, none started after, and the workspace was deleted
+  - Waiting-bound work: limit 3 took 0.97 s vs 2.48 s at limit 1
+  - `MAX_CONCURRENT_DOCUMENTS` = 3 → 3; 0 → 1; -4 → 1
+- [x] `scripts/benchmark_concurrency.py`: `caffeinate -i python -u -m scripts.benchmark_concurrency 1 2 3`. **Each run uses 10 new random fake documents** (5 passports, 5 Aadhaar), because Ollama caches repeats. It warms up the model first, checks accuracy (type, owner, passport/Aadhaar number) and reports `ollama ps` memory
+- [x] **Benchmarked on the MacBook Air M4** (10 documents, 2 model calls each):
+
+  | Ollama `NUM_PARALLEL` | Run | limit 1 | limit 2 | limit 3 |
+  |---|---|---|---|---|
+  | 1 | 1st, order 1→2→3 | **221 s** (22.1 s/doc) | 266 s | 275 s |
+  | 1 | 2nd, order 3→1 | 278 s | | 266 s |
+  | 2 (temporary, 3-min cool-down) | 3rd | | **216 s** (21.6 s/doc) | |
+
+  - Every run: **10/10 correct**, 7.4 GB, 100% GPU
+  - **Ollama 0.14.1 can't run qwen3-vl in parallel.** Its log shows `WARN "model architecture does not currently support parallel requests" architecture=qwen3vl` and loads with `Parallel:1` even when `OLLAMA_NUM_PARALLEL=2`. Memory stayed at 7.4 GB (real parallel slots would add KV cache)
+  - The differences between limits are **heat, not concurrency**. The fanless Air slows from about 22 s to about 27 s per document under sustained load; in the reverse-order run, limit 1 was the slow one
+  - `OLLAMA_NUM_PARALLEL` was set temporarily with `launchctl setenv` + `brew services restart ollama`, then **restored** (`launchctl unsetenv`, restart; the log shows `OLLAMA_NUM_PARALLEL:1` again)
+- [x] **Decision: keep `MAX_CONCURRENT_DOCUMENTS=2` on the M4.** It costs nothing measurable, and it lets the next document download and render while the model works on the current one (real network downloads take longer than the local copies in the benchmark). At most one request waits in Ollama's queue, so `OLLAMA_TIMEOUT_SECONDS=180` is safe. Going higher only lengthens Ollama's queue
+- [x] Regression at limit 2: `test_document_check` 25/25 (13 URLs in 191 s, down from 180–222 s one at a time, which is within the heat noise), `test_pipelines` 20/20, `test_grouping` 13/13
+
+#### How to benchmark and tune on another machine
+1. Check the Ollama log for `model architecture does not currently support parallel requests`. If it's there, Ollama runs one request at a time and `MAX_CONCURRENT_DOCUMENTS` 1–2 is enough.
+2. Otherwise set `OLLAMA_NUM_PARALLEL` (for brew: `launchctl setenv OLLAMA_NUM_PARALLEL 2 && brew services restart ollama`; on Linux systemd: `Environment=` in the service), and check `ollama ps`: memory must stay 100% GPU.
+3. Run `caffeinate -i python -u -m scripts.benchmark_concurrency 1 2 3`, **with a cool-down between runs** on laptops, and repeat in reverse order.
+4. Set `MAX_CONCURRENT_DOCUMENTS` to `OLLAMA_NUM_PARALLEL` (or one more) at the fastest setting that keeps 10/10 correct.
 
 ### Stage 12: Hardening ⬜
 - [ ] Consistent error responses. If one document fails, the rest of the batch still completes
@@ -429,8 +461,10 @@ app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard")
 app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 1)
 scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
 app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
-app/services/document_processor.py   DocumentProcessor.process(urls): full flow per document, then group
+app/services/document_processor.py   DocumentProcessor.process(urls): documents concurrently (shared semaphore), then group
 scripts/test_document_check.py 25 end-to-end checks (SampleDownloader serves documents/ as https://samples.test/...)
+scripts/test_concurrency.py    17 offline concurrency checks (fakes)
+scripts/benchmark_concurrency.py   real-model benchmark: 10 fresh random documents per run, accuracy + ollama ps
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only, no address), driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
@@ -443,14 +477,13 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–10 are done. `POST /document-check` runs the full flow and returns the target JSON grouped by owner. It passes 25/25 end-to-end on two runs, plus a real-server curl test. Documents are processed one at a time: 13 take about 3–4 minutes. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
+**Status:** Stages 1–11 are done. Documents run concurrently behind a shared `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS=2)`. The benchmark showed Ollama 0.14.1 runs qwen3-vl one request at a time (it doesn't support parallel requests), so on the M4 about 22 s per document is the ceiling, and heat pushes it towards about 27 s. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
 
 **Next action:**
-1. **Stage 11: concurrency.**
-   - Add `MAX_CONCURRENT_DOCUMENTS` (config, `.env.example`, `.env`; start at 2 on the M4 per section 4).
-   - In `DocumentProcessor.process`: `asyncio.gather` over documents, each wrapped in an `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS)`. Keep results in input order (`sourceIndex`), and keep "one failure never stops the others".
-   - Decide what the semaphore covers: the whole document, or only the Ollama calls (downloads could run with more parallelism). Record it.
-   - Ollama only runs requests in parallel if `OLLAMA_NUM_PARALLEL` > 1 (the Homebrew service's default may be 1). Check what it is, and how to set it for `brew services`.
-   - Benchmark 10 **different** documents (Ollama caches repeats, so generate varied fake samples) at concurrency 1, 2 and 3, together with `OLLAMA_NUM_PARALLEL`. Watch memory with `ollama ps`. Record the results and the best value in section 4.
-   - Test: results are the same as when run one at a time; no more than N run at once (count with a fake); one failure is still isolated.
-2. Stage 12 notes collected so far: 422 handler without `input`; whether "Ollama down" should return 503; README pass.
+1. **Stage 12: hardening.**
+   - Custom `RequestValidationError` handler: keep `type`, `loc` and `msg`, **remove `input`** (and `ctx` where it echoes values), so URLs and tokens aren't repeated back. Test 9 URLs, a bad URL, and a missing field.
+   - Decide whether "Ollama down" should return 503 instead of 200 with every document failed (for example, check `is_model_available()` up front, or 503 when all documents fail with an Ollama error). Record it.
+   - Check that temporary files are deleted on every path (already tested: normal, failure, cancel). Check that logging has no personal data (already: host only; httpx silenced) and decide whether structured (key=value or JSON) logs are wanted.
+   - Consider a whole-request time limit, since 10–50 documents at about 22 s each can take 4–18 minutes. At minimum, document it in the README.
+   - Final README pass: setup, `.env` keys, the endpoint with example request and response, the added `sourceIndex`/`error` fields, security measures, the test scripts, and the performance numbers.
+2. Idea for later (not required): if Ollama adds parallel support for qwen3vl, re-run the benchmark.
