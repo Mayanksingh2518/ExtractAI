@@ -308,10 +308,25 @@ Items are ticked only once they have been **built and tested**.
 - [x] **Tested with the real model:** classified all 8 samples and grouped them. Passport PNG ("John Doe"), passport scan PDF ("John Doe") and tax return ("JOHN DOE") → **one group, "John Doe"**. Aadhaar → MARIA DOE; driving licence → ALEX KUMAR; PAN → Sara Lee; passport with no name and receipt → `null` group, last
 - **Open for Stage 10:** `unknown` documents that have an owner (driving licence, PAN) currently get their own groups. Decide whether the response includes them (probably yes, with `data: null`) and record the decision
 
-### Stage 8: Pipeline architecture ⬜
-- [ ] `app/pipelines/base.py`: `BaseDocumentPipeline(ABC)` with `async def extract(self, image_path)`
-- [ ] `app/pipelines/registry.py`: the `PIPELINES` dict and a lookup helper
-- [ ] Test: a type with no pipeline doesn't crash and gets `data: null` or `{}`. Decide which and record it here
+### Stage 8: Pipeline architecture ✅
+- [x] `app/pipelines/base.py`: `BaseDocumentPipeline(ABC)` with `async def extract(self, page_images: list[Path]) -> BaseModel`
+  - **Decision: `extract` takes the list of page images, not a single `image_path`.** A tax return's totals can be on page 2 or 3. Each pipeline sets `max_pages` (default 1; keep it at 3 or fewer, per the Stage 5 token finding)
+  - The `OllamaClient` is passed in through the constructor (dependency injection). `document_type` is a class attribute, and `__init_subclass__` raises `TypeError` if a pipeline forgets it
+  - Helper `_generate(schema, prompt, page_images)`: sends the first `max_pages` pages with a shared no-guessing `SYSTEM_PROMPT` and raises `ExtractionError` on Ollama failure or no pages (messages are safe to log). Stage 9 pipelines are just a schema, a prompt and a one-line `extract`
+- [x] `app/pipelines/registry.py`: `PipelineRegistry` wraps the `{document_type: pipeline}` dict. It has `get(type)` (accepts the enum or a string), `extract(type, pages)`, `types`, and `build(ollama)` from `PIPELINE_CLASSES`
+  - **To add a type:** write a subclass and add it to `PIPELINE_CLASSES`. The API doesn't change. (For the classifier to detect a new type, the `DocumentType` enum and prompt also need it)
+  - Keys are plain strings, so a pipeline can be registered for a type the enum doesn't have yet
+  - Duplicate `document_type` → `ValueError`
+  - `PIPELINE_CLASSES` is empty until Stage 9
+- [x] **Decision: a type with no pipeline (e.g. `unknown`) gets `data: null`, not `{}`.** `null` means "not extracted"; `{}` would look like "extracted, nothing found". `registry.extract` returns `None` and makes no model call
+- [x] **Tested with `python -m scripts.test_pipelines`: 20/20 pass** (fake pipelines + a fake Ollama client that records calls)
+  - Lookup by enum and by string; `unknown` and an unregistered `idCard` → `None`; `types` listed
+  - Extract returns the validated model; `max_pages=1` sends only page 1; the shared system prompt is sent
+  - `unknown` → `None` **with no model call**
+  - A new `bankStatement` pipeline works through the registry with no other changes; its `max_pages=3` sends pages 1–3; 2 pages with `max_pages=3` sends 2
+  - Ollama down → `ExtractionError: passport extraction failed: Could not reach Ollama: ConnectError`; no pages → `ExtractionError`
+  - The base class can't be instantiated; a subclass without `extract()` or without `document_type` → `TypeError`; duplicate type → `ValueError`
+  - `PipelineRegistry.build()` works with the (still empty) real list
 
 ### Stage 9: Passport, Aadhaar and tax return pipelines ⬜
 - [ ] `PassportData`, `AadhaarData`, `TaxReturnData` schemas (watch the exact field spellings)
@@ -356,6 +371,9 @@ app/services/classifier.py     DocumentClassifier.classify(page_images) -> Class
 scripts/test_classifier.py     12 offline cross-checks + 8 sample + 2 error classification checks
 app/services/grouping.py       group_by_owner(items, owner_of) -> [OwnerGroup(ownerName, documents)]
 scripts/test_grouping.py       13 offline grouping checks
+app/pipelines/base.py          BaseDocumentPipeline(ABC): extract(page_images), _generate helper, ExtractionError
+app/pipelines/registry.py      PipelineRegistry (get / extract / build) + PIPELINE_CLASSES
+scripts/test_pipelines.py      20 offline pipeline/registry checks
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar, driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
@@ -368,12 +386,13 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–7 are done. Classification passes 22/22 and grouping 13/13, and grouping was also checked with the real model on all 8 samples. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
+**Status:** Stages 1–8 are done. The pipeline base class and registry pass 20/20 with fake pipelines. `PIPELINE_CLASSES` is still empty. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
 
 **Next action:**
-1. **Stage 8: pipeline architecture.**
-   - `app/pipelines/base.py`: `BaseDocumentPipeline(ABC)` with `async def extract(self, image_path)`. Consider taking the page list, since tax returns span several pages, and passing the `OllamaClient` in through the constructor.
-   - `app/pipelines/registry.py`: the `PIPELINES` dict plus a lookup helper. Adding a type must not need API changes.
-   - Decide what a type with no pipeline (`unknown`) returns: `data: null` or `{}`. Record it.
-   - Test with a fake pipeline (no Ollama): registry lookup, a missing type, and adding a new type without touching other code.
-2. Waiting on the user: decided to **keep `qwen3-vl:8b`** until Stage 9, to compare accuracy on small print. `mistral:latest` (text only) isn't used by the project.
+1. **Stage 9: passport, Aadhaar and tax return pipelines.**
+   - Schemas in `app/schemas/extraction.py` (or next to each pipeline): `PassportData`, `AadhaarData` (**`aadharNumber`**), `TaxReturnData` (**`assessmentYear: int | None`**). Every field nullable, with a `description` on each (this worked well for classification).
+   - `app/pipelines/passport.py`, `aadhaar.py`, `tax_return.py`, each a subclass with a prompt. Tax return `max_pages` probably 2–3 (check which page has the totals in `sample_tax_return.pdf`).
+   - Add all three to `PIPELINE_CLASSES`.
+   - Decide on formats: dates as `YYYY-MM-DD`? Aadhaar as `1234-5678-9012`? Amounts as digit-only strings (`"500000"`)? Assessment year from "2025-26" → `2025`? Normalise in validators, not by trusting the model.
+   - Test on the fake samples, including missing fields → `null` (the no-name passport). **Re-check `PDF_RENDER_DPI=100`** against small print, and compare with `qwen3-vl:8b` if numbers are misread.
+2. `qwen3-vl:8b` is kept until Stage 9 for that accuracy comparison. `mistral:latest` (text only) isn't used by the project.
