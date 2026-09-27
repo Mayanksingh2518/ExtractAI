@@ -209,12 +209,30 @@ Items are ticked only once they have been **built and tested**.
 - [x] **Tested over HTTP with curl against uvicorn:** 10 URLs → 200 `{"received":10}`; 9 URLs → 422 `too_short`; `"not-a-url"` → 422 `url_parsing`; `{}` → 422 `missing`; a body that isn't JSON → 422 `json_invalid`. `/docs` → 200, and OpenAPI lists `/document-check` and `/`
 - [x] **Finding:** FastAPI's default 422 response repeats the submitted `input` (the URLs) back to the caller. Signed document URLs can contain access tokens, so **Stage 12 must add a validation-error handler that removes `input` from 422 responses** (added to Stage 12 below)
 
-### Stage 4: Downloading documents ⬜
-- [ ] `app/services/downloader.py` using httpx streaming, with settings in `.env` (max size, timeout)
-- [ ] SSRF protection: only `http`/`https`; resolve DNS and reject private, loopback, link-local, reserved and multicast IPs; follow redirects manually and check each one again
-- [ ] Check the status, the maximum file size (stop the stream early), and the allowlist (content-type **and** the file's first bytes: `%PDF`, the PNG header, the JPEG `FFD8FF`)
-- [ ] A private temporary folder per request (`tempfile.mkdtemp`, mode 0700), always deleted in a `finally` block
-- [ ] Tests: a good URL; 404; file too large; wrong type; `http://127.0.0.1/`; `http://169.254.169.254/`; `http://localhost/`; a redirect to a private IP; a timeout
+### Stage 4: Downloading documents ✅
+- [x] Settings in `app/config.py`, `.env.example` and `.env`: `DOWNLOAD_TIMEOUT_SECONDS=30`, `MAX_DOWNLOAD_BYTES=20971520` (20 MB), `MAX_REDIRECTS=3`
+- [x] `app/utils/url_safety.py`: `resolve_public_ip(url)`
+  - Allows only `http`/`https`, and rejects URLs with embedded credentials
+  - Resolves the host, and requires **every** address to be public: `ip.is_global` and not multicast, with IPv4-mapped IPv6 unwrapped first
+  - Returns the checked IP, so the download connects to it without a second DNS lookup (this blocks DNS rebinding)
+- [x] `app/utils/workspace.py`: `request_workspace()` context manager, giving a private temporary folder (`mkdtemp`, mode 0700) that's always deleted
+- [x] `app/services/downloader.py`: `DocumentDownloader.download(url, dest_dir, name) -> DownloadedDocument(url, path, kind, size_bytes)`
+  - Connects to the checked IP, sending the real hostname in the `Host` header and as the TLS SNI, so certificates are still verified against the hostname
+  - `follow_redirects=False`: redirects are followed by hand (at most `MAX_REDIRECTS`), and **each hop goes through the SSRF check again**
+  - `trust_env=False`, so proxy environment variables can't bypass the pinning
+  - Status must be 200. Downloads are capped by `Content-Length` **and** by counting bytes while streaming (it stops early). `asyncio.timeout` caps the **total** time, not just each read
+  - Allowlist: `Content-Type` must be `application/pdf`, `image/png` or `image/jpeg`, **and** the first bytes must match (`%PDF-`, the PNG header, `FFD8FF`). **Decision:** `application/octet-stream` is accepted (S3 and similar storage commonly send it); for those the file's first bytes alone decide
+  - Files are saved as `<name>.<pdf|png|jpg>` based on the detected type, not the URL. Partial files are deleted on any failure
+  - Errors raise `DownloadError`. Messages contain the host only, never the full URL (which may hold tokens). The log line records host, kind and size
+- [x] **Tested `url_safety` (22 cases), all correct:**
+  - Allowed: `example.com`, `w3.org`
+  - Blocked: `127.0.0.1`, `localhost`, `10.x`, `192.168.x`, `172.16.x`, `169.254.169.254`, `0.0.0.0`, `100.64.x` (CGNAT), `224.0.0.1`, `[::1]`, `[::ffff:127.0.0.1]`, `[fe80::1]`, `[fd00::1]`, decimal `2130706433`, `127.0.0.1.nip.io`, `10.0.0.1.nip.io`, `ftp://`, `file://`, `user:pass@`, an unresolvable host
+- [x] **Tested `workspace`:** mode `0o700`; deleted after a normal exit and after an exception
+- [x] **Tested the downloader with `python -m scripts.test_downloader`: 24/24 pass** (real servers plus mock responses)
+  - Success: PDF (w3.org), PNG, JPEG, a redirect to a public PNG, and `octet-stream` with PDF bytes
+  - Rejected: HTTP 404, HTTP 500, `text/html`, `application/json`, `image/png` whose body was JSON, a redirect to `127.0.0.1:11434`, a redirect to `169.254.169.254`, a redirect to `10.0.0.1.nip.io`, 5 redirects (max 3), `localhost:11434` directly, size limit by Content-Length, size limit while streaming (chunked), a slow server hitting the total timeout (3 s), an expired TLS certificate, a TLS certificate for the wrong host, octet-stream with random bytes, `application/pdf` whose body was PNG, and a missing Content-Type
+  - Pinning: the request went to the checked IP (`172.66.147.243`) with `Host: example.com` and SNI `example.com`
+  - No partial files were left after failures, and no `extractai-*` temporary folders were left on disk
 
 ### Stage 5: PDF to image conversion ⬜
 - [ ] `app/utils/pdf.py` using `import pymupdf`. Render pages to PNG at a sensible DPI and keep the original. Images are used as they are
@@ -266,6 +284,10 @@ app/config.py                  Settings from .env (get_settings)
 app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
 app/api/document_check.py      POST /document-check (placeholder: returns {"received": n})
+app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
+app/utils/workspace.py         request_workspace(): private temp dir, always deleted
+app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
+scripts/test_downloader.py     24 live + mock download/security checks
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake documents/sample_passport.png
 scripts/test_ollama.py         manual check of the Ollama service
@@ -278,14 +300,16 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–3 are done. `POST /document-check` validates its input and returns `{"received": n}` for now. The model is `qwen3-vl:8b-instruct`.
+**Status:** Stages 1–4 are done. Safe downloading is built and tested (24/24), but it **isn't connected to the endpoint yet**; that happens in Stage 10. The model is `qwen3-vl:8b-instruct`.
 
-**Next action (Stage 4: safe downloading):**
-1. Add the download limits to `app/config.py` and `.env.example`: `DOWNLOAD_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES` (for example 20 MB), and `MAX_REDIRECTS`.
-2. Create `app/services/downloader.py` step by step, testing each part before the next:
-   a. URL and IP safety check: resolve the host, then reject private, loopback, link-local, reserved and multicast addresses (use the `ipaddress` module's properties such as `is_global`).
-   b. Streamed download with manual redirects (`follow_redirects=False`, re-checking each `Location`), a status check, and a size limit that stops the download early.
-   c. File-type allowlist: `Content-Type` **and** the file's first bytes (`%PDF`, the PNG header, the JPEG `FFD8FF`).
-   d. A private temporary folder per request, always deleted.
-3. Run the Stage 4 tests listed in section 5. Note: SSRF protection blocks `localhost`, so test downloads need a public test URL. Don't use a real person's documents.
-4. Waiting on the user: remove `qwen3-vl:8b` (`ollama rm qwen3-vl:8b`) to free 6 GB?
+**Next action (Stage 5: PDF to images):**
+1. Add `PDF_RENDER_DPI` (start at about 150) and `MAX_PDF_PAGES` (for example 10) to config and `.env.example`.
+2. Create `app/utils/pdf.py` with `import pymupdf`:
+   - `document_to_images(doc: DownloadedDocument, out_dir) -> list[Path]`
+   - For a PDF: render each page to PNG at the chosen DPI, up to `MAX_PDF_PAGES`, and keep the original PDF.
+   - For PNG/JPEG: return the file as it is (no conversion; each image is processed only once).
+   - Encrypted or corrupt PDFs raise a clear error.
+   - Rendering is CPU work, so run it in `asyncio.to_thread`.
+3. Check the image size against the model's token budget. Ollama's context is `num_ctx` 8192 tokens, and a small image already used about 1,400. Measure the prompt tokens for a rendered page, and choose DPI and max size so it fits.
+4. Tests: a 1-page PDF, a multi-page PDF (generate fake ones with PyMuPDF in `scripts/make_sample_documents.py`), the page limit, PNG and JPEG passed through unchanged, a corrupt PDF, an encrypted PDF, and a rendered page sent through `scripts/test_ollama.py`.
+5. Waiting on the user: remove `qwen3-vl:8b` (`ollama rm qwen3-vl:8b`) to free 6 GB?

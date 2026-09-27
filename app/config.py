@@ -15,6 +15,9 @@ class Settings:
     ollama_model: str
     ollama_timeout_seconds: float
     ollama_num_ctx: int
+    download_timeout_seconds: float
+    max_download_bytes: int
+    max_redirects: int
 
 
 @lru_cache
@@ -26,4 +29,7 @@ def get_settings() -> Settings:
         ollama_model=os.getenv("OLLAMA_MODEL", "qwen3-vl:8b-instruct"),
         ollama_timeout_seconds=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180")),
         ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
+        download_timeout_seconds=float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "30")),
+        max_download_bytes=int(os.getenv("MAX_DOWNLOAD_BYTES", str(20 * 1024 * 1024))),
+        max_redirects=int(os.getenv("MAX_REDIRECTS", "3")),
     )
