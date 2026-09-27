@@ -293,9 +293,20 @@ Items are ticked only once they have been **built and tested**.
 | **The Mac went to idle sleep during a long test run on battery**, causing a 9.5-minute gap (confirmed with `pmset -g log`) | Run long tests and benchmarks with **`caffeinate -i`**, and use `python -u` so output appears straight away |
 | Speed at `PDF_RENDER_DPI=100`: about 9–17 s per document | Tune in Stage 11 |
 
-### Stage 7: Group by owner ⬜
-- [ ] Group documents by `ownerName` with `defaultdict(list)`
-- [ ] Test: documents from 2 owners, plus ones with a `null` owner
+### Stage 7: Group by owner ✅
+- [x] `app/services/grouping.py`: `group_by_owner(items, owner_of) -> list[OwnerGroup]`, using `defaultdict(list)`. `OwnerGroup(ownerName, documents)`
+  - It's generic: it takes any item plus a function that returns its owner name, so Stage 10 can pass whatever document objects it builds
+  - **Decision: the grouping key is `owner_key(name)`,** which casefolds and collapses spaces, so "John Doe", "JOHN DOE" and "john  doe" are one person. **No fuzzy matching:** "Jon Doe" stays separate, because merging people by guesswork is worse than keeping them apart
+  - **Decision: the displayed name is the first spelling seen**, with spaces tidied but otherwise unchanged. Title-casing would break names like "McDonald" or "D'Souza"
+  - **Decision: documents with no owner** (`null`, `""` or blank) go in one group with `ownerName: null`, **placed last**. The other groups keep the order in which their owner is first seen
+- [x] **Tested with `python -m scripts.test_grouping`: 13/13 pass** (no Ollama)
+  - 2 owners in mixed spellings plus 2 `null` documents → `["John Doe", "MARIA DOE", None]`; each group keeps input order; every document appears exactly once; the same objects are returned, unchanged
+  - Empty input → `[]`; only `null` owners → a single `null` group; no `null` owners → no `null` group
+  - "John Doe" / "Jon Doe" / "John Doe Jr" → 3 separate groups
+  - `"  "` and `""` → `null` group; `" Sara  Lee "` + `"SARA LEE"` → one group displayed as "Sara Lee"
+  - "José Núñez" + "JOSÉ NÚÑEZ" → one group
+- [x] **Tested with the real model:** classified all 8 samples and grouped them. Passport PNG ("John Doe"), passport scan PDF ("John Doe") and tax return ("JOHN DOE") → **one group, "John Doe"**. Aadhaar → MARIA DOE; driving licence → ALEX KUMAR; PAN → Sara Lee; passport with no name and receipt → `null` group, last
+- **Open for Stage 10:** `unknown` documents that have an owner (driving licence, PAN) currently get their own groups. Decide whether the response includes them (probably yes, with `data: null`) and record the decision
 
 ### Stage 8: Pipeline architecture ⬜
 - [ ] `app/pipelines/base.py`: `BaseDocumentPipeline(ABC)` with `async def extract(self, image_path)`
@@ -343,6 +354,8 @@ scripts/test_pdf.py            11 conversion checks
 app/schemas/classification.py  DocumentType enum + Classification (documentName first!)
 app/services/classifier.py     DocumentClassifier.classify(page_images) -> Classification (+ check_type_against_name)
 scripts/test_classifier.py     12 offline cross-checks + 8 sample + 2 error classification checks
+app/services/grouping.py       group_by_owner(items, owner_of) -> [OwnerGroup(ownerName, documents)]
+scripts/test_grouping.py       13 offline grouping checks
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar, driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
@@ -355,11 +368,12 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–6 are done. Classification passes 22/22 on two runs in a row, with the PAN card fixed by the name cross-check. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
+**Status:** Stages 1–7 are done. Classification passes 22/22 and grouping 13/13, and grouping was also checked with the real model on all 8 samples. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
 
 **Next action:**
-1. **Stage 7: group by owner.** Write a small grouping helper (for example `app/services/grouping.py`) using `defaultdict(list)`:
-   - Group with a **normalised key** (casefold, collapse spaces), because the model returns "John Doe" and "JOHN DOE" for the same person. Show a readable name (for example the first one seen, or title case). Decide which and record it.
-   - Documents with `ownerName = null` go in their own group. Decide the label (for example `ownerName: null`) and record it.
-   - Test with no Ollama: 2 owners with mixed capitalisation and spacing, plus `null`-owner documents, plus an empty input.
-2. Waiting on the user: remove `qwen3-vl:8b` (`ollama rm qwen3-vl:8b`) to free 6 GB?
+1. **Stage 8: pipeline architecture.**
+   - `app/pipelines/base.py`: `BaseDocumentPipeline(ABC)` with `async def extract(self, image_path)`. Consider taking the page list, since tax returns span several pages, and passing the `OllamaClient` in through the constructor.
+   - `app/pipelines/registry.py`: the `PIPELINES` dict plus a lookup helper. Adding a type must not need API changes.
+   - Decide what a type with no pipeline (`unknown`) returns: `data: null` or `{}`. Record it.
+   - Test with a fake pipeline (no Ollama): registry lookup, a missing type, and adding a new type without touching other code.
+2. Waiting on the user: decided to **keep `qwen3-vl:8b`** until Stage 9, to compare accuracy on small print. `mistral:latest` (text only) isn't used by the project.
