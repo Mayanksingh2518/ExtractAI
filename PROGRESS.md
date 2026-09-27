@@ -30,6 +30,7 @@ When the user says **"read PROGRESS.md"**, or starts a new session, do the follo
   5. the expected output
   6. how to test it
 - **The assistant runs the commands and tests itself.** The user asked for this ("do it yourself"). Then show the real output and explain it.
+- **Test everything built in every stage**, including the success case, each failure and edge case, and the security checks, and record the real results here. The user asked for this explicitly ("always test everything that you do in each stage").
 - Don't treat a step as working until it has been tested. If something fails, fix that step before moving on.
 - Keep answers clear and not too long. The user sometimes writes short messages, so read them with this file in mind.
 - **Security matters:** use only FAKE sample documents (`scripts/make_sample_documents.py`), never print or log real document contents or full LLM output, and check git history before anything is published.
@@ -201,11 +202,12 @@ Items are ticked only once they have been **built and tested**.
 | Timing on the M4: `8b-instruct` about 7.7 s per document, `8b` about 21–27 s | We use `8b-instruct`. Starting point for tuning in Stage 11 |
 | Sending the **same** image twice took only 1.7 s the second time, because Ollama reused its work from the first request | **Benchmarks must use different images each time**, or the numbers come out too fast |
 
-### Stage 3: `POST /document-check` with validation of at least 10 URLs 🔄 (in progress)
+### Stage 3: `POST /document-check` with validation of at least 10 URLs ✅
 - [x] `app/schemas/request.py`: `DocumentCheckRequest` with `documentUrls: list[HttpUrl]`, `min_length=10` (`MIN_DOCUMENTS`), `max_length=50` (`MAX_DOCUMENTS`, added so one request can't queue unlimited work), and `extra="forbid"`
 - [x] **Tested the schema directly with Pydantic:** 10 URLs are accepted. Each of these is rejected: 9 URLs (`too_short`), 60 URLs (`too_long`), `"not-a-url"` (`url_parsing`), `ftp://` (`url_scheme`), a missing `documentUrls` (`missing`), and an extra field `foo` (`extra_forbidden`)
-- [ ] `app/api/document_check.py`: an `APIRouter` with `POST /document-check`, included in `app/main.py`. For now it just echoes the number of URLs back
-- [ ] Tests (curl or `/docs`): 10 URLs → 200; 9 URLs → 422; a URL that isn't valid → 422; `documentUrls` missing → 422
+- [x] `app/api/document_check.py`: an `APIRouter` (tag `documents`) with `POST /document-check`, which takes `DocumentCheckRequest` and for now returns `{"received": <number of URLs>}`. Registered in `app/main.py` with `app.include_router(...)`
+- [x] **Tested over HTTP with curl against uvicorn:** 10 URLs → 200 `{"received":10}`; 9 URLs → 422 `too_short`; `"not-a-url"` → 422 `url_parsing`; `{}` → 422 `missing`; a body that isn't JSON → 422 `json_invalid`. `/docs` → 200, and OpenAPI lists `/document-check` and `/`
+- [x] **Finding:** FastAPI's default 422 response repeats the submitted `input` (the URLs) back to the caller. Signed document URLs can contain access tokens, so **Stage 12 must add a validation-error handler that removes `input` from 422 responses** (added to Stage 12 below)
 
 ### Stage 4: Downloading documents ⬜
 - [ ] `app/services/downloader.py` using httpx streaming, with settings in `.env` (max size, timeout)
@@ -249,6 +251,7 @@ Items are ticked only once they have been **built and tested**.
 
 ### Stage 12: Hardening ⬜
 - [ ] Consistent error responses. If one document fails, the rest of the batch still completes
+- [ ] Custom `RequestValidationError` handler: keep `type`, `loc` and `msg`, and **remove `input`**, so URLs and tokens aren't repeated back (found in Stage 3)
 - [ ] Temporary files cleaned up on every path
 - [ ] Structured logging with no personal data
 - [ ] Final README pass
@@ -262,6 +265,7 @@ app/main.py                    FastAPI app + GET /
 app/config.py                  Settings from .env (get_settings)
 app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
+app/api/document_check.py      POST /document-check (placeholder: returns {"received": n})
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake documents/sample_passport.png
 scripts/test_ollama.py         manual check of the Ollama service
@@ -274,10 +278,14 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stage 2 is done, and the model is now `qwen3-vl:8b-instruct`. Stage 3 is in progress: the request schema is written and tested, but there's no API route yet.
+**Status:** Stages 1–3 are done. `POST /document-check` validates its input and returns `{"received": n}` for now. The model is `qwen3-vl:8b-instruct`.
 
-**Next action:**
-1. **Stage 3, step 2:** create `app/api/document_check.py`, an `APIRouter` with `POST /document-check` that takes `DocumentCheckRequest` and, for now, returns `{"received": <number of URLs>}`. Register it in `app/main.py` with `app.include_router(...)`.
-2. Test it over HTTP with curl: 10 URLs → 200; 9 URLs → 422; an invalid URL → 422; `documentUrls` missing → 422. Also check that it appears in `/docs`.
-3. Tick Stage 3, update this section, and offer to commit and push.
-4. Waiting on the user: should `qwen3-vl:8b` be removed with `ollama rm qwen3-vl:8b` to free 6 GB? It isn't needed now that we use `8b-instruct`.
+**Next action (Stage 4: safe downloading):**
+1. Add the download limits to `app/config.py` and `.env.example`: `DOWNLOAD_TIMEOUT_SECONDS`, `MAX_DOWNLOAD_BYTES` (for example 20 MB), and `MAX_REDIRECTS`.
+2. Create `app/services/downloader.py` step by step, testing each part before the next:
+   a. URL and IP safety check: resolve the host, then reject private, loopback, link-local, reserved and multicast addresses (use the `ipaddress` module's properties such as `is_global`).
+   b. Streamed download with manual redirects (`follow_redirects=False`, re-checking each `Location`), a status check, and a size limit that stops the download early.
+   c. File-type allowlist: `Content-Type` **and** the file's first bytes (`%PDF`, the PNG header, the JPEG `FFD8FF`).
+   d. A private temporary folder per request, always deleted.
+3. Run the Stage 4 tests listed in section 5. Note: SSRF protection blocks `localhost`, so test downloads need a public test URL. Don't use a real person's documents.
+4. Waiting on the user: remove `qwen3-vl:8b` (`ollama rm qwen3-vl:8b`) to free 6 GB?
