@@ -355,9 +355,36 @@ Items are ticked only once they have been **built and tested**.
 - [x] **`PDF_RENDER_DPI=100` re-check:** every number was read correctly. **Caveat:** the fake samples use large fonts (26–32 px, 13 pt in the PDF). Real scans with small print may need 120–150. Test this when real-looking samples are available
 - [x] **`qwen3-vl:8b` comparison: not needed**, since `8b-instruct` got every value right
 
-### Stage 10: Connect everything ⬜
-- [ ] Endpoint runs the full flow: download, convert, classify, group, extract, respond. `app/schemas/response.py` holds the response models
-- [ ] Test with 10+ sample URLs (served locally or from a test host; note that SSRF protection blocks localhost, so plan for that): the response matches the target JSON shape
+### Stage 10: Connect everything ✅
+- [x] `app/schemas/response.py`: `DocumentResult {documentType, documentName, data, sourceIndex, error}` and `OwnerResult {ownerName, documents}`. The route returns `list[OwnerResult]`
+- [x] `app/services/document_processor.py`: `DocumentProcessor(downloader, classifier, registry, settings).process(urls)`
+  - Per document: download → `to_page_images` → classify → `registry.extract`, each document in its own subfolder of one `request_workspace()`. Then `group_by_owner`
+  - One document at a time for now (Stage 11 adds concurrency)
+- [x] `app/main.py`: a `lifespan` creates the `OllamaClient`, `DocumentDownloader`, classifier, registry and processor **once at startup** (shared connection pools) and closes them at shutdown. `logging.basicConfig` uses `LOG_LEVEL`
+- [x] `app/api/document_check.py`: `POST /document-check` (`response_model=list[OwnerResult]`) gets the processor through `Depends(get_processor)`, which tests replace with `app.dependency_overrides`
+- **Decisions:**
+  - **One bad document never fails the batch.** It stays in the response with an `error` message that's safe to show (host only, never the full URL). If download, reading or classification fails → `documentType: "unknown"`, `documentName: null`, `data: null`, in the `null`-owner group. If only extraction fails → type, name and owner are kept, `data: null`, `error` set. An unexpected exception (a bug) → `error: "internal error"`, and only the exception **type** is logged, never its message
+  - **`unknown` documents are included**, with `data: null` and `error: null` (e.g. the driving licence and PAN card get their own owner groups)
+  - **Two fields added** to each document beyond the brief's shape: `error` (`null` on success), and `sourceIndex` (position in `documentUrls`) so callers can match results to their URLs without the response repeating URLs, which may hold tokens
+  - The request returns **200 even if every document failed** (e.g. Ollama down), with an error on each document. Stage 12 may revisit this (for example 503 when Ollama is unreachable)
+  - **Testing without weakening SSRF protection:** `SampleDownloader` lives **only in `scripts/test_document_check.py`**. It serves `documents/` for the fake host `samples.test` and sends every other URL through the real `DocumentDownloader`. No test switch exists in `app/`
+- [x] **Tested with `caffeinate -i python -u -m scripts.test_document_check`: 25/25 on two runs in a row** (in-process via `httpx.ASGITransport`, real classifier, pipelines and model)
+  - 13 URLs → 200 in 180 s / 222 s. Groups: `["John Doe", "MARIA DOE", "RAVI SHARMA", "ALEX KUMAR", "Sara Lee", null]`; John Doe = passport PNG + tax return ("JOHN DOE") + passport PDF; `sourceIndex` 0–12 each exactly once
+  - All 9 samples have the exact expected type, owner and data (Aadhaar front → `address: null`; no-name passport → `null` owner but data extracted)
+  - Real SSRF block (`127.0.0.1:11434`) → `download failed: blocked URL: ...`; 404 → `download failed: host 'samples.test' returned HTTP 404`; fake PDF → `could not read document: file is not a readable PDF`; real w3.org PDF → `unknown` ("Dummy PDF file")
+  - No full URL in the response; the brief's field names are present; 9 URLs → 422; the temporary workspace is deleted
+  - Extraction failure → type and owner kept, `data: null`, error set; a type with no pipeline → `data: null`, **no** error; Ollama down → every document in the `null` group with `classification failed: Could not reach Ollama`; a `RuntimeError` holding "secret" text → `internal error`, and "secret" appears nowhere in the response
+- [x] **Tested the real server** (`uvicorn` + `curl`, real downloader, 10 URLs): 200 in 20.5 s. Two w3.org PDFs (with `?token=SECRET123`) → `unknown` "Dummy PDF file". Blocked: `127.0.0.1`, `169.254.169.254`, `10.0.0.1.nip.io`, `localhost`, `user:pw@`. Also httpbin 404, `text/html` not allowed, example.com 404. **`SECRET123` and the URL path appear 0 times in the server log**, and no `extractai-*` folders were left
+- [x] Regression: `test_extraction --offline` 39/39, `test_pipelines` 20/20, `test_grouping` 13/13
+
+#### What the Stage 10 tests showed
+
+| Finding | What we did |
+|---|---|
+| **httpx logs every request's full URL at INFO** (`GET https://104.18.23.19/WAI/.../dummy.pdf`), so signed-URL tokens would reach the logs | `app/main.py` sets the `httpx` and `httpcore` loggers to WARNING. Checked: the token and path appear 0 times in the log |
+| 13 documents one at a time take **180–222 s** (about 14–17 s each: 2 model calls per document) | Clients need a long timeout. **Stage 11** (concurrency) is the fix |
+| A repeated URL was classified in 1.7 s (Ollama reused its cached work) | Same as Stage 2: benchmarks must use different images |
+| `TestClient` runs the app on a separate event loop, which can't share our async Ollama client | The test uses `httpx.ASGITransport` on the same loop instead |
 
 ### Stage 11: Concurrency ⬜
 - [ ] `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS)`, set from `.env`
@@ -376,11 +403,11 @@ Items are ticked only once they have been **built and tested**.
 ## 6. File map (what exists now)
 
 ```
-app/main.py                    FastAPI app + GET /
+app/main.py                    FastAPI app, lifespan (shared clients), logging, GET /
 app/config.py                  Settings from .env (get_settings)
 app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
-app/api/document_check.py      POST /document-check (placeholder: returns {"received": n})
+app/api/document_check.py      POST /document-check -> list[OwnerResult] (processor via Depends(get_processor))
 app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
 app/utils/workspace.py         request_workspace(): private temp dir, always deleted
 app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
@@ -401,6 +428,9 @@ app/pipelines/passport.py      PassportPipeline      (document_type "passport")
 app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard")
 app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 1)
 scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
+app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
+app/services/document_processor.py   DocumentProcessor.process(urls): full flow per document, then group
+scripts/test_document_check.py 25 end-to-end checks (SampleDownloader serves documents/ as https://samples.test/...)
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only, no address), driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
@@ -413,14 +443,14 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–9 are done. All three pipelines extract every field correctly on the fake samples (47/47 on two runs), and missing fields come back as `null`. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
+**Status:** Stages 1–10 are done. `POST /document-check` runs the full flow and returns the target JSON grouped by owner. It passes 25/25 end-to-end on two runs, plus a real-server curl test. Documents are processed one at a time: 13 take about 3–4 minutes. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
 
 **Next action:**
-1. **Stage 10: connect everything** in `POST /document-check`:
-   - `app/schemas/response.py`: `DocumentResult {documentType, documentName, data: dict | null}` and `OwnerResult {ownerName, documents}`. The response is a list of `OwnerResult`; see the target JSON in section 2.
-   - Probably an orchestration service (for example `app/services/document_processor.py`) so the route stays thin. Per document: download → `to_page_images` → classify → `registry.extract`. Then `group_by_owner`. All inside one `request_workspace()`.
-   - **Decide:** are `unknown` documents in the response? (Suggested: yes, with `data: null`.) What does a **failed** document look like (download, PDF, classify or extract error)? Suggested: keep it in the response with an `error` message that's safe to show, so one bad URL doesn't fail the batch. (That overlaps Stage 12; do the basic version here.)
-   - Run documents one at a time for now; `asyncio.Semaphore` concurrency is Stage 11.
-   - **Testing problem:** SSRF protection blocks localhost, so the samples can't be served from `python -m http.server`. Options: inject a test downloader (dependency override), or an allowlist setting used only for tests. Decide, and **never weaken the SSRF check in production code paths**.
-   - Test with 10+ URLs: target JSON shape, John Doe grouped across passport + tax return, `null`-owner group last, a failing URL doesn't break the rest.
-2. Housekeeping done: `qwen3-vl:8b` removed (freed 6.1 GB); `8b-instruct` checked afterwards (`test_ollama` → passport / John Doe, 9.7 s). `mistral:latest` (text only) is still installed but not used by the project.
+1. **Stage 11: concurrency.**
+   - Add `MAX_CONCURRENT_DOCUMENTS` (config, `.env.example`, `.env`; start at 2 on the M4 per section 4).
+   - In `DocumentProcessor.process`: `asyncio.gather` over documents, each wrapped in an `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS)`. Keep results in input order (`sourceIndex`), and keep "one failure never stops the others".
+   - Decide what the semaphore covers: the whole document, or only the Ollama calls (downloads could run with more parallelism). Record it.
+   - Ollama only runs requests in parallel if `OLLAMA_NUM_PARALLEL` > 1 (the Homebrew service's default may be 1). Check what it is, and how to set it for `brew services`.
+   - Benchmark 10 **different** documents (Ollama caches repeats, so generate varied fake samples) at concurrency 1, 2 and 3, together with `OLLAMA_NUM_PARALLEL`. Watch memory with `ollama ps`. Record the results and the best value in section 4.
+   - Test: results are the same as when run one at a time; no more than N run at once (count with a fake); one failure is still isolated.
+2. Stage 12 notes collected so far: 422 handler without `input`; whether "Ollama down" should return 503; README pass.
