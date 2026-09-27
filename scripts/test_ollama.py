@@ -6,38 +6,13 @@ Usage:  python -m scripts.test_ollama documents/sample_passport.png
 import asyncio
 import sys
 import time
-from enum import Enum
 from pathlib import Path
 
-from pydantic import BaseModel, Field
-
 from app.config import get_settings
+from app.schemas.classification import Classification
+from app.services.classifier import CLASSIFY_PROMPT as PROMPT
+from app.services.classifier import SYSTEM_PROMPT
 from app.services.ollama import OllamaClient, OllamaError
-
-
-class DocumentType(str, Enum):
-    PASSPORT = "passport"
-    AADHAAR = "idCard"
-    TAX_RETURN = "taxReturn"
-    UNKNOWN = "unknown"
-
-
-class Classification(BaseModel):
-    documentType: DocumentType
-    documentName: str | None = Field(description="Short title of the document, e.g. 'Indian Passport'.")
-    ownerName: str | None = Field(description="Full name of the document holder, and nothing else.")
-
-
-SYSTEM_PROMPT = (
-    "You classify identity and tax documents. Report only what is visible. "
-    "Never guess. Use null when a field is not visible."
-)
-PROMPT = (
-    "Classify this document.\n"
-    "- documentType: passport, idCard (Aadhaar), taxReturn, or unknown.\n"
-    "- documentName: a short title for the document.\n"
-    "- ownerName: ONLY the holder's full name (given names then surname). No other fields."
-)
 
 
 async def main(image_path: Path) -> None:

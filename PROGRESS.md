@@ -261,10 +261,31 @@ Items are ticked only once they have been **built and tested**.
 | Time grows with pixels. A page took 7 s at 72 DPI, 12 s at 100, 19 s at 120, and 31–38 s at 150. All were classified correctly | **Default is `PDF_RENDER_DPI=100`**. **Check again in Stage 9**, when we extract small print (Aadhaar numbers, tax amounts). If numbers are misread, try 120–150 |
 | Large PNG/JPEG photos pass through unchanged, and Ollama shrinks them to about 2 MP, which takes about 30 s | Consider this in Stage 11 (for example, shrinking very large photos once). Not done now, because of the "don't process images more than once" rule |
 
-### Stage 6: Classification ⬜
-- [ ] `app/schemas/`: the `DocumentType` enum and a `Classification` model (move them out of `scripts/test_ollama.py`)
-- [ ] `app/services/classifier.py`, built on `OllamaClient.generate_structured`
-- [ ] Tests (fake samples): passport, Aadhaar, tax return; an unrelated image → `unknown`; a document with no visible name → `ownerName: null`
+### Stage 6: Classification 🔄 (in progress, 1 test still failing)
+- [x] `app/schemas/classification.py`: the `DocumentType` enum and `Classification`
+  - **Field order is `documentName`, `documentType`, `ownerName` on purpose.** The model fills in fields in schema order, so naming the document first grounds the type choice. This fixed the driving licence being classified as `idCard`
+  - A `field_validator` tidies spacing and turns `""`, `"null"`, `"none"`, `"n/a"` and `"unknown"` into `None`
+  - **Tested:** normal input, extra spaces, empty or `"null"` strings becoming `None`, a real `null`, a bad enum value (rejected), a missing field (rejected)
+- [x] `app/services/classifier.py`: `DocumentClassifier(ollama, max_pages=1).classify(page_images) -> Classification`
+  - **Decision:** only **page 1** is sent. Page 1 identifies nearly every document, and each extra page costs up to about 2,000 tokens
+  - **Decision:** if Ollama fails, it raises `ClassificationError` (messages are safe to log). Stage 10/12 will turn that into a per-document failure, so one bad document doesn't fail the whole batch
+  - `SYSTEM_PROMPT` and `CLASSIFY_PROMPT` define each type and say that other ID cards are `unknown`. `ownerName` must be the holder only: no relatives (S/O, D/O), no authority
+- [x] `scripts/test_ollama.py` now imports the real schema and prompts (no duplicate copies)
+- [x] New fake samples in `scripts/make_sample_documents.py`: `sample_aadhaar.png` (MARIA DOE, 2345 6789 0123, DOB 01/01/1990, address), `sample_driving_licence.png` (ALEX KUMAR), `sample_pan_card.png` (SARA LEE, FGHIJ5678K), `sample_receipt.png`, `sample_passport_no_name.png` (name fields blank)
+- [x] `scripts/test_classifier.py`: 8 sample cases plus 2 error cases
+- [ ] **Current result: 9/10, and the same both runs** (`caffeinate -i python -u -m scripts.test_classifier`)
+  - PASS: passport PNG → passport / John Doe; passport scan PDF → passport; Aadhaar → idCard / MARIA DOE; tax return PDF → taxReturn / JOHN DOE; driving licence → unknown; receipt → unknown / owner None; passport with no name → passport / owner **None** (no guessing ✅); Ollama unreachable → `ClassificationError`; no pages → `ClassificationError`
+  - **FAIL: the PAN card is classified as `idCard`.** Before the latest prompt change it was `taxReturn`, because the prompt had listed "PAN" as a tax-return sign; that's been removed. The `documentName` is always correct ("Permanent Account Number Card"). The prompt alone isn't enough to fix it
+
+#### What the Stage 6 tests showed
+
+| Finding | What we did / will do |
+|---|---|
+| The model fills in fields in schema order; choosing the type before naming the document gave driving licence → `idCard` | Moved `documentName` first. The driving licence now comes back `unknown` |
+| The model reads the value "idCard" as *any* ID card; the prompt alone doesn't fix the PAN card | **Next action:** add a code check (see section 7) |
+| `ownerName` capitalisation varies between runs ("John Doe" / "JOHN DOE") | **Stage 7 must group with a normalised key** (casefold, collapse spaces) but show a readable name |
+| **The Mac went to idle sleep during a long test run on battery**, causing a 9.5-minute gap (confirmed with `pmset -g log`) | Run long tests and benchmarks with **`caffeinate -i`**, and use `python -u` so output appears straight away |
+| Speed at `PDF_RENDER_DPI=100`: about 9–17 s per document | Tune in Stage 11 |
 
 ### Stage 7: Group by owner ⬜
 - [ ] Group documents by `ownerName` with `defaultdict(list)`
@@ -313,8 +334,11 @@ app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
 scripts/test_downloader.py     24 live + mock download/security checks
 app/utils/pdf.py               to_page_images(): PDF -> PNG pages, images pass through
 scripts/test_pdf.py            11 conversion checks
+app/schemas/classification.py  DocumentType enum + Classification (documentName first!)
+app/services/classifier.py     DocumentClassifier.classify(page_images) -> Classification
+scripts/test_classifier.py     8 sample + 2 error classification checks
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
-scripts/make_sample_documents.py   writes fake sample_passport.png, sample_passport_scan.pdf, sample_tax_return.pdf into documents/
+scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar, driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
 README.md                      public project README
 CLAUDE.md                      tells the AI assistant to start from this file
@@ -325,14 +349,14 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–5 are done: validation, safe downloading and PDF-to-image conversion, each tested separately. They **aren't connected to the endpoint yet**; that's Stage 10. The model is `qwen3-vl:8b-instruct`, and `PDF_RENDER_DPI=100`.
+**Status:** Stages 1–5 are done. **Stage 6 (classification) is almost done: 9/10 tests pass, and only the PAN card fails** (classified as `idCard` instead of `unknown`). Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
 
-**Next action (Stage 6: classification):**
-1. `app/schemas/classification.py`: the `DocumentType` enum (`PASSPORT="passport"`, `AADHAAR="idCard"`, `TAX_RETURN="taxReturn"`, `UNKNOWN="unknown"`) and a `Classification` model (`documentType`, `documentName: str | None`, `ownerName: str | None`, with field descriptions). Move these out of `scripts/test_ollama.py` and import them there instead.
-2. `app/services/classifier.py`: `DocumentClassifier(ollama_client).classify(image_paths) -> Classification`, using the tested prompt from `scripts/test_ollama.py`.
-   - Decide and record whether to send only page 1 or the first few pages (≤ 3; mind the token budget).
-   - Clean up the output: trim `ownerName`, turn empty strings into `None`.
-   - If `OllamaError` occurs, raise a classifier error or return `unknown`. Decide which and record it.
-3. Add fake samples: an Aadhaar-style card, an unrelated image (for example a receipt or landscape → should give `unknown`), and a document with no visible name (→ `ownerName: null`).
-4. Tests: passport PNG, passport scan PDF, Aadhaar, tax return, the unrelated image (→ `unknown`), no name (→ `null`), and Ollama down (→ clear error).
+**Next action:**
+1. **Fix the PAN card case with a code check in `DocumentClassifier.classify`**, since the prompt alone didn't fix it:
+   - If `documentType == idCard` but `documentName` doesn't mention Aadhaar (`"aadhaar"`, `"aadhar"`, `"uidai"`, casefolded), change it to `unknown`.
+   - Decide whether passport and taxReturn need similar checks (for example, "Permanent Account Number" can never be a taxReturn). Keep it small and record the decision here.
+   - Reason: `documentName` is reliably correct (it named the PAN card correctly every time), while the enum choice is not.
+2. Re-run `caffeinate -i python -u -m scripts.test_classifier` **twice**. The target is 10/10 on both runs.
+3. Tick Stage 6, update this section, then commit and push.
+4. Then **Stage 7: group by owner**, using a normalised key (casefold, collapse spaces), because the model returns "John Doe" and "JOHN DOE" for the same person. Documents with `ownerName = null` go in their own group (decide the label, for example `null`, and record it).
 5. Waiting on the user: remove `qwen3-vl:8b` (`ollama rm qwen3-vl:8b`) to free 6 GB?
