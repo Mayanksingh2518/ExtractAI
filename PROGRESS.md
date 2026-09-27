@@ -234,9 +234,32 @@ Items are ticked only once they have been **built and tested**.
   - Pinning: the request went to the checked IP (`172.66.147.243`) with `Host: example.com` and SNI `example.com`
   - No partial files were left after failures, and no `extractai-*` temporary folders were left on disk
 
-### Stage 5: PDF to image conversion ⬜
-- [ ] `app/utils/pdf.py` using `import pymupdf`. Render pages to PNG at a sensible DPI and keep the original. Images are used as they are
-- [ ] Test: a multi-page PDF produces one PNG per page, and an image input isn't converted again
+### Stage 5: PDF to image conversion ✅
+- [x] Settings: `PDF_RENDER_DPI=100` and `MAX_PDF_PAGES=10` (config, `.env.example`, `.env`)
+- [x] `app/utils/pdf.py`: `to_page_images(file_path, out_dir, dpi, max_pages) -> list[Path]`
+  - PDF: renders each page to `<name>_page<N>.png` using `import pymupdf`, inside `asyncio.to_thread` because it's CPU work. The original PDF is kept. At most `MAX_PDF_PAGES` pages are rendered, and the rest are skipped (logged as a count only)
+  - PNG/JPEG: returned **as is**, with no re-encoding and no copy (so each image is processed only once)
+  - Safety: pages are limited to 4000 px on the longest side (`MAX_RENDER_SIDE_PX`; the DPI is lowered for huge pages), so a PDF can't run the machine out of memory
+  - Errors raise `PdfConversionError`: not a readable PDF, password-protected, no pages, a page that can't be rendered, or an unsupported file type
+  - MuPDF's own messages to the terminal are turned off (`mupdf_display_errors/warnings(False)`). They bypass logging and could include document text
+- [x] `scripts/make_sample_documents.py` now also makes `sample_passport_scan.pdf` (1-page scan-style PDF) and `sample_tax_return.pdf` (3-page fake ITR: AY 2025-26, JOHN DOE, income 5,00,000, taxes paid 50,000, tax due 4,50,000)
+- [x] **Tested with `python -m scripts.test_pdf`: 11/11 pass**
+  - 1-page PDF → 1 image; 3-page → 3; 12 pages with a limit of 10 → 10
+  - PNG and JPEG returned as the **same file**, unchanged (SHA-256 checked)
+  - A 200×200 inch page was limited to 4000×4000
+  - An owner-password-only PDF opens. A user-password PDF, garbage named `.pdf`, and `.txt` are each rejected with a clear error
+  - A truncated PDF is repaired by MuPDF (3 pages)
+  - The original file is always kept and unchanged
+- [x] **Tested rendered pages with the model** (`scripts/test_ollama.py`): the scanned passport PDF gave passport / JOHN DOE; tax return page 1 gave taxReturn / JOHN DOE; tax return page 2 (no name on it) gave `ownerName: None`, which is correct (no guessing)
+- [x] Regression check: `test_downloader` 24/24, `test_ollama` OK
+
+#### What the Stage 5 tests showed
+
+| Finding | What we did |
+|---|---|
+| Ollama shrinks big images itself. Tokens ≈ pixels/1000 up to about 2 MP, then **stop at about 2,000 tokens** (a 12 MP photo cost the same as a 2 MP one) | One page always fits in `num_ctx` 8192. Sending **several pages in one call** adds up to 2,000 tokens each, so keep multi-page calls to 3 pages or fewer, or raise `OLLAMA_NUM_CTX` |
+| Time grows with pixels. A page took 7 s at 72 DPI, 12 s at 100, 19 s at 120, and 31–38 s at 150. All were classified correctly | **Default is `PDF_RENDER_DPI=100`**. **Check again in Stage 9**, when we extract small print (Aadhaar numbers, tax amounts). If numbers are misread, try 120–150 |
+| Large PNG/JPEG photos pass through unchanged, and Ollama shrinks them to about 2 MP, which takes about 30 s | Consider this in Stage 11 (for example, shrinking very large photos once). Not done now, because of the "don't process images more than once" rule |
 
 ### Stage 6: Classification ⬜
 - [ ] `app/schemas/`: the `DocumentType` enum and a `Classification` model (move them out of `scripts/test_ollama.py`)
@@ -288,8 +311,10 @@ app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
 app/utils/workspace.py         request_workspace(): private temp dir, always deleted
 app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
 scripts/test_downloader.py     24 live + mock download/security checks
+app/utils/pdf.py               to_page_images(): PDF -> PNG pages, images pass through
+scripts/test_pdf.py            11 conversion checks
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
-scripts/make_sample_documents.py   writes fake documents/sample_passport.png
+scripts/make_sample_documents.py   writes fake sample_passport.png, sample_passport_scan.pdf, sample_tax_return.pdf into documents/
 scripts/test_ollama.py         manual check of the Ollama service
 README.md                      public project README
 CLAUDE.md                      tells the AI assistant to start from this file
@@ -300,16 +325,14 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–4 are done. Safe downloading is built and tested (24/24), but it **isn't connected to the endpoint yet**; that happens in Stage 10. The model is `qwen3-vl:8b-instruct`.
+**Status:** Stages 1–5 are done: validation, safe downloading and PDF-to-image conversion, each tested separately. They **aren't connected to the endpoint yet**; that's Stage 10. The model is `qwen3-vl:8b-instruct`, and `PDF_RENDER_DPI=100`.
 
-**Next action (Stage 5: PDF to images):**
-1. Add `PDF_RENDER_DPI` (start at about 150) and `MAX_PDF_PAGES` (for example 10) to config and `.env.example`.
-2. Create `app/utils/pdf.py` with `import pymupdf`:
-   - `document_to_images(doc: DownloadedDocument, out_dir) -> list[Path]`
-   - For a PDF: render each page to PNG at the chosen DPI, up to `MAX_PDF_PAGES`, and keep the original PDF.
-   - For PNG/JPEG: return the file as it is (no conversion; each image is processed only once).
-   - Encrypted or corrupt PDFs raise a clear error.
-   - Rendering is CPU work, so run it in `asyncio.to_thread`.
-3. Check the image size against the model's token budget. Ollama's context is `num_ctx` 8192 tokens, and a small image already used about 1,400. Measure the prompt tokens for a rendered page, and choose DPI and max size so it fits.
-4. Tests: a 1-page PDF, a multi-page PDF (generate fake ones with PyMuPDF in `scripts/make_sample_documents.py`), the page limit, PNG and JPEG passed through unchanged, a corrupt PDF, an encrypted PDF, and a rendered page sent through `scripts/test_ollama.py`.
+**Next action (Stage 6: classification):**
+1. `app/schemas/classification.py`: the `DocumentType` enum (`PASSPORT="passport"`, `AADHAAR="idCard"`, `TAX_RETURN="taxReturn"`, `UNKNOWN="unknown"`) and a `Classification` model (`documentType`, `documentName: str | None`, `ownerName: str | None`, with field descriptions). Move these out of `scripts/test_ollama.py` and import them there instead.
+2. `app/services/classifier.py`: `DocumentClassifier(ollama_client).classify(image_paths) -> Classification`, using the tested prompt from `scripts/test_ollama.py`.
+   - Decide and record whether to send only page 1 or the first few pages (≤ 3; mind the token budget).
+   - Clean up the output: trim `ownerName`, turn empty strings into `None`.
+   - If `OllamaError` occurs, raise a classifier error or return `unknown`. Decide which and record it.
+3. Add fake samples: an Aadhaar-style card, an unrelated image (for example a receipt or landscape → should give `unknown`), and a document with no visible name (→ `ownerName: null`).
+4. Tests: passport PNG, passport scan PDF, Aadhaar, tax return, the unrelated image (→ `unknown`), no name (→ `null`), and Ollama down (→ clear error).
 5. Waiting on the user: remove `qwen3-vl:8b` (`ollama rm qwen3-vl:8b`) to free 6 GB?

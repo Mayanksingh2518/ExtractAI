@@ -18,6 +18,8 @@ class Settings:
     download_timeout_seconds: float
     max_download_bytes: int
     max_redirects: int
+    pdf_render_dpi: int
+    max_pdf_pages: int
 
 
 @lru_cache
@@ -32,4 +34,6 @@ def get_settings() -> Settings:
         download_timeout_seconds=float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "30")),
         max_download_bytes=int(os.getenv("MAX_DOWNLOAD_BYTES", str(20 * 1024 * 1024))),
         max_redirects=int(os.getenv("MAX_REDIRECTS", "3")),
+        pdf_render_dpi=int(os.getenv("PDF_RENDER_DPI", "100")),
+        max_pdf_pages=int(os.getenv("MAX_PDF_PAGES", "10")),
     )

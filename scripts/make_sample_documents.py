@@ -6,6 +6,7 @@ Writes to documents/ (gitignored).
 
 from pathlib import Path
 
+import pymupdf
 from PIL import Image, ImageDraw, ImageFont
 
 OUTPUT_DIR = Path("documents")
@@ -37,8 +38,48 @@ def make_passport(path: Path) -> None:
     img.save(path)
 
 
+def make_scanned_pdf(image_path: Path, path: Path) -> None:
+    """A PDF whose only page is an image, like a scanned document."""
+    document = pymupdf.open()
+    page = document.new_page(width=595, height=842)  # A4 in points
+    page.insert_image(pymupdf.Rect(40, 40, 555, 349), filename=str(image_path))
+    document.save(path)
+    document.close()
+
+
+def make_tax_return(path: Path) -> None:
+    """A 3-page text PDF loosely modelled on an Indian ITR acknowledgement."""
+    pages = [
+        [
+            "INCOME TAX DEPARTMENT - TESTLAND",
+            "INDIAN INCOME TAX RETURN ACKNOWLEDGEMENT (SAMPLE)",
+            "Assessment Year: 2025-26",
+            "",
+            "Name: JOHN DOE",
+            "PAN: ABCDE1234F",
+            "Status: Individual",
+            "",
+            "1. Gross Total Income ............ 5,00,000",
+            "2. Total Income .................. 5,00,000",
+            "3. Taxes Paid .................... 50,000",
+            "4. Tax Payable / Due ............. 4,50,000",
+        ],
+        ["Schedule S - Details of Income from Salary", "", "Employer: TESTLAND WIDGETS PVT LTD", "Salary: 5,00,000"],
+        ["Schedule TDS - Tax Deducted at Source", "", "TDS on salary: 50,000", "", "This is a sample document for testing."],
+    ]
+    document = pymupdf.open()
+    for lines in pages:
+        page = document.new_page(width=595, height=842)
+        page.insert_text((50, 70), "\n".join(lines), fontsize=13, lineheight=1.6)
+    document.save(path)
+    document.close()
+
+
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(exist_ok=True)
-    passport_path = OUTPUT_DIR / "sample_passport.png"
-    make_passport(passport_path)
-    print(f"saved {passport_path}")
+    passport_png = OUTPUT_DIR / "sample_passport.png"
+    make_passport(passport_png)
+    make_scanned_pdf(passport_png, OUTPUT_DIR / "sample_passport_scan.pdf")
+    make_tax_return(OUTPUT_DIR / "sample_tax_return.pdf")
+    for path in sorted(OUTPUT_DIR.glob("sample_*")):
+        print(f"saved {path}")
