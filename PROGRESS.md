@@ -152,7 +152,7 @@ uvicorn app.main:app --reload          # then in another terminal: curl http://1
 | Machine | Specs | Model | Concurrency | Notes |
 |---|---|---|---|---|
 | Old laptop | 2 GB GPU | `qwen3-vl:4b` (planned) | 1 | Stage 1 was done here |
-| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` also installed) | 2 (to be benchmarked) | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
+| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` removed 2026-09-27) | 2 (to be benchmarked) | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
 
 ---
 
@@ -328,11 +328,32 @@ Items are ticked only once they have been **built and tested**.
   - The base class can't be instantiated; a subclass without `extract()` or without `document_type` → `TypeError`; duplicate type → `ValueError`
   - `PipelineRegistry.build()` works with the (still empty) real list
 
-### Stage 9: Passport, Aadhaar and tax return pipelines ⬜
-- [ ] `PassportData`, `AadhaarData`, `TaxReturnData` schemas (watch the exact field spellings)
-- [ ] `app/pipelines/passport.py`, `aadhaar.py`, `tax_return.py`
-- [ ] Add fake Aadhaar and tax return samples to `scripts/make_sample_documents.py`
-- [ ] Test each pipeline on its sample. Missing fields should come back as `null`
+### Stage 9: Passport, Aadhaar and tax return pipelines ✅
+- [x] **Decision: the model copies values exactly as printed, and code converts them** (`app/utils/normalize.py`). Values that don't match a known format are **kept as printed**, never guessed or dropped:
+  - `to_iso_date`: day-first formats (`15 MAY 1985`, `01/01/1990`, `23-11-1975`, `05.08.1988`, `15-Sep-1985`, ISO) → `YYYY-MM-DD`. **US month-first dates are not supported** (Indian documents and passports are day-first). An impossible date like `31/02/1990` is kept as printed
+  - `to_aadhaar_number`: 12 digits with or without spaces or dashes → `1234-5678-9012`; masked `XXXX XXXX 0123` → `XXXX-XXXX-0123`
+  - `to_amount`: removes `₹`, `Rs.`, `INR`, `/-`, commas and spaces (Indian `5,00,000` → `500000`); `.00` dropped, other decimals kept (`1234.50`); `Nil` kept as printed
+  - `clean_text`: collapses spaces; `""`, `null`, `none`, `n/a`, `na`, `-`, `not visible` → `None`
+- [x] `app/schemas/extraction.py`: `PassportData`, `AadhaarData` (**`aadharNumber`**), `TaxReturnData` (**`assessmentYear: int | None`**). Every field is nullable, with a `description` telling the model to copy the value as printed, and validators that call the normalisers
+  - **Exception:** `assessmentYear` is an integer in the schema Ollama receives, so the model itself converts "AY 2025-26" → 2025 (the prompt says: first year, not the financial year). Out-of-range values (not 1900–2100) → `None`, treated as a misread
+  - Passport numbers: spaces removed, uppercased
+- [x] `app/pipelines/passport.py`, `aadhaar.py`, `tax_return.py`: each is a prompt plus a one-line `extract` using `_generate`. All three are in `PIPELINE_CLASSES`
+  - **Decision: tax return `max_pages = 1`.** The ITR-V acknowledgement has every field on page 1; raise it to 2–3 for full ITR forms
+- [x] New fake sample `sample_aadhaar_front.png` (RAVI SHARMA, 9876 5432 1098, DOB 23/11/1975, **no address**, like the front of a real Aadhaar card)
+- [x] **Tested with `caffeinate -i python -u -m scripts.test_extraction`: 47/47 on two runs in a row**
+  - Part A (offline, `--offline`), 39 checks: 13 dates, 8 Aadhaar numbers, 10 amounts, the three schemas (exact field names and normalised output), out-of-range year → `None`, the model schema asks for an integer year, the registry has `passport`/`idCard`/`taxReturn`, every key is a real `DocumentType`, `unknown` has no pipeline
+  - Part B (model), 8 checks, exact values:
+    - passport PNG and scan PDF → `AB1234567`, `1985-05-15`, `2030-12-31`
+    - passport with no name → `CD7654321`, `1979-02-02`, `2029-01-01`
+    - Aadhaar → `2345-6789-0123`, `1990-01-01`, full address
+    - **Aadhaar front → `address: null`** (missing field → null ✅)
+    - tax return → `2025`, `JOHN DOE`, `500000`, `50000`, `450000`
+    - **tax return page 2 only (salary schedule, no totals) → all `null`**. The model did not use "Salary: 5,00,000" as total income (no guessing ✅)
+    - Ollama unreachable → `ExtractionError`
+  - Speed: about 8–16 s per document
+  - Regression: `test_pipelines` 20/20, `test_grouping` 13/13
+- [x] **`PDF_RENDER_DPI=100` re-check:** every number was read correctly. **Caveat:** the fake samples use large fonts (26–32 px, 13 pt in the PDF). Real scans with small print may need 120–150. Test this when real-looking samples are available
+- [x] **`qwen3-vl:8b` comparison: not needed**, since `8b-instruct` got every value right
 
 ### Stage 10: Connect everything ⬜
 - [ ] Endpoint runs the full flow: download, convert, classify, group, extract, respond. `app/schemas/response.py` holds the response models
@@ -374,8 +395,14 @@ scripts/test_grouping.py       13 offline grouping checks
 app/pipelines/base.py          BaseDocumentPipeline(ABC): extract(page_images), _generate helper, ExtractionError
 app/pipelines/registry.py      PipelineRegistry (get / extract / build) + PIPELINE_CLASSES
 scripts/test_pipelines.py      20 offline pipeline/registry checks
+app/utils/normalize.py         clean_text, to_iso_date, to_aadhaar_number, to_amount
+app/schemas/extraction.py      PassportData, AadhaarData (aadharNumber), TaxReturnData (assessmentYear)
+app/pipelines/passport.py      PassportPipeline      (document_type "passport")
+app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard")
+app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 1)
+scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
-scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar, driving licence, PAN card, receipt into documents/
+scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only, no address), driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
 README.md                      public project README
 CLAUDE.md                      tells the AI assistant to start from this file
@@ -386,13 +413,14 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–8 are done. The pipeline base class and registry pass 20/20 with fake pipelines. `PIPELINE_CLASSES` is still empty. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
+**Status:** Stages 1–9 are done. All three pipelines extract every field correctly on the fake samples (47/47 on two runs), and missing fields come back as `null`. Nothing is connected to the endpoint yet; that's Stage 10. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
 
 **Next action:**
-1. **Stage 9: passport, Aadhaar and tax return pipelines.**
-   - Schemas in `app/schemas/extraction.py` (or next to each pipeline): `PassportData`, `AadhaarData` (**`aadharNumber`**), `TaxReturnData` (**`assessmentYear: int | None`**). Every field nullable, with a `description` on each (this worked well for classification).
-   - `app/pipelines/passport.py`, `aadhaar.py`, `tax_return.py`, each a subclass with a prompt. Tax return `max_pages` probably 2–3 (check which page has the totals in `sample_tax_return.pdf`).
-   - Add all three to `PIPELINE_CLASSES`.
-   - Decide on formats: dates as `YYYY-MM-DD`? Aadhaar as `1234-5678-9012`? Amounts as digit-only strings (`"500000"`)? Assessment year from "2025-26" → `2025`? Normalise in validators, not by trusting the model.
-   - Test on the fake samples, including missing fields → `null` (the no-name passport). **Re-check `PDF_RENDER_DPI=100`** against small print, and compare with `qwen3-vl:8b` if numbers are misread.
-2. `qwen3-vl:8b` is kept until Stage 9 for that accuracy comparison. `mistral:latest` (text only) isn't used by the project.
+1. **Stage 10: connect everything** in `POST /document-check`:
+   - `app/schemas/response.py`: `DocumentResult {documentType, documentName, data: dict | null}` and `OwnerResult {ownerName, documents}`. The response is a list of `OwnerResult`; see the target JSON in section 2.
+   - Probably an orchestration service (for example `app/services/document_processor.py`) so the route stays thin. Per document: download → `to_page_images` → classify → `registry.extract`. Then `group_by_owner`. All inside one `request_workspace()`.
+   - **Decide:** are `unknown` documents in the response? (Suggested: yes, with `data: null`.) What does a **failed** document look like (download, PDF, classify or extract error)? Suggested: keep it in the response with an `error` message that's safe to show, so one bad URL doesn't fail the batch. (That overlaps Stage 12; do the basic version here.)
+   - Run documents one at a time for now; `asyncio.Semaphore` concurrency is Stage 11.
+   - **Testing problem:** SSRF protection blocks localhost, so the samples can't be served from `python -m http.server`. Options: inject a test downloader (dependency override), or an allowlist setting used only for tests. Decide, and **never weaken the SSRF check in production code paths**.
+   - Test with 10+ URLs: target JSON shape, John Doe grouped across passport + tax return, `null`-owner group last, a failing URL doesn't break the rest.
+2. Housekeeping done: `qwen3-vl:8b` removed (freed 6.1 GB); `8b-instruct` checked afterwards (`test_ollama` → passport / John Doe, 9.7 s). `mistral:latest` (text only) is still installed but not used by the project.

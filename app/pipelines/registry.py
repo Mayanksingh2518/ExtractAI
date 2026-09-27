@@ -10,11 +10,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from app.pipelines.aadhaar import AadhaarPipeline
 from app.pipelines.base import BaseDocumentPipeline
+from app.pipelines.passport import PassportPipeline
+from app.pipelines.tax_return import TaxReturnPipeline
 from app.services.ollama import OllamaClient
 
-# Filled in by Stage 9 (PassportPipeline, AadhaarPipeline, TaxReturnPipeline).
-PIPELINE_CLASSES: list[type[BaseDocumentPipeline]] = []
+PIPELINE_CLASSES: list[type[BaseDocumentPipeline]] = [PassportPipeline, AadhaarPipeline, TaxReturnPipeline]
 
 
 class PipelineRegistry:

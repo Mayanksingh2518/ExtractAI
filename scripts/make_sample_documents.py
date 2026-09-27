@@ -63,6 +63,16 @@ def make_aadhaar(path: Path) -> None:
     ], size=(1100, 620))
 
 
+def make_aadhaar_front(path: Path) -> None:
+    """Front of the card only: like a real Aadhaar, the address is on the back."""
+    _card(path, "GOVERNMENT OF INDIA  (SAMPLE - NOT A REAL DOCUMENT)", "AADHAAR", "darkred", [
+        ("Name", "RAVI SHARMA"),
+        ("DOB", "23/11/1975"),
+        ("Gender", "MALE"),
+        ("Aadhaar No.", "9876 5432 1098"),
+    ], size=(1100, 520))
+
+
 def make_driving_licence(path: Path) -> None:
     _card(path, "TESTLAND TRANSPORT AUTHORITY", "DRIVING LICENCE", "darkgreen", [
         ("Name", "ALEX KUMAR"),
@@ -136,6 +146,7 @@ if __name__ == "__main__":
     make_scanned_pdf(passport_png, OUTPUT_DIR / "sample_passport_scan.pdf")
     make_tax_return(OUTPUT_DIR / "sample_tax_return.pdf")
     make_aadhaar(OUTPUT_DIR / "sample_aadhaar.png")
+    make_aadhaar_front(OUTPUT_DIR / "sample_aadhaar_front.png")
     make_passport_without_name(OUTPUT_DIR / "sample_passport_no_name.png")
     make_driving_licence(OUTPUT_DIR / "sample_driving_licence.png")
     make_receipt(OUTPUT_DIR / "sample_receipt.png")
