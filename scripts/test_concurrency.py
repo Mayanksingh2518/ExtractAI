@@ -30,6 +30,8 @@ class Tracker:
 
     def __init__(self, delay: float = 0.05) -> None:
         self.delay, self.now, self.peak, self.started = delay, 0, 0, 0
+        self.model_now, self.model_peak, self.downloading_peak = 0, 0, 0
+        self.downloading, self.events = 0, []  # events: ("classify"|"extract", index) in the order the model got them
 
     def enter(self) -> None:
         self.now += 1
@@ -50,7 +52,10 @@ class FakeDownloader:
     async def download(self, url, dest_dir, name):
         index = int(url.rsplit("/", 1)[1])
         self.t.enter()
+        self.t.downloading += 1
+        self.t.downloading_peak = max(self.t.downloading_peak, self.t.downloading)
         await self.t.work()
+        self.t.downloading -= 1
         if index in self.fail:
             self.t.leave()
             raise DownloadError("host 'fake.test' returned HTTP 404")
@@ -63,12 +68,20 @@ class FakeClassifier:
     def __init__(self, tracker: Tracker, crash: set[int] = frozenset()) -> None:
         self.t, self.crash = tracker, crash
 
+    async def is_ready(self) -> bool:
+        return True
+
     async def classify(self, pages):
         index = int(pages[0].parent.name.removeprefix("doc"))
+        self.t.model_now += 1
+        self.t.model_peak = max(self.t.model_peak, self.t.model_now)
+        self.t.events.append(("classify", index))
         await self.t.work()
         if index in self.crash:
+            self.t.model_now -= 1
             self.t.leave()
             raise RuntimeError("bug")
+        self.t.model_now -= 1
         return Classification(documentName=f"Doc {index}", documentType=DocumentType.PASSPORT, ownerName=OWNERS[index % 3])
 
 
@@ -77,14 +90,19 @@ class FakeRegistry:
         self.t = tracker
 
     async def extract(self, document_type, pages):
+        self.t.model_now += 1
+        self.t.model_peak = max(self.t.model_peak, self.t.model_now)
+        self.t.events.append(("extract", int(pages[0].parent.name.removeprefix("doc"))))
         await self.t.work()
+        self.t.model_now -= 1
         self.t.leave()
         return None
 
 
-def make(limit: int, fail=frozenset(), crash=frozenset(), delay: float = 0.05) -> tuple[DocumentProcessor, Tracker]:
+def make(limit: int, fail=frozenset(), crash=frozenset(), delay: float = 0.05, model: int | None = None) -> tuple[DocumentProcessor, Tracker]:
+    """model = MODEL_PARALLEL_REQUESTS; defaults to the outer limit so older checks test the outer limit alone."""
     t = Tracker(delay)
-    settings = dataclasses.replace(get_settings(), max_concurrent_documents=limit)
+    settings = dataclasses.replace(get_settings(), max_concurrent_documents=limit, model_parallel_requests=model or limit)
     return DocumentProcessor(FakeDownloader(t, fail), FakeClassifier(t, crash), FakeRegistry(t), settings), t
 
 
@@ -165,10 +183,28 @@ async def main() -> None:
     slow = time.perf_counter() - start
     check("limit 3 is faster than limit 1 on waiting work", fast < slow / 2, f"{fast:.2f}s vs {slow:.2f}s")
 
+    # Inner model limit: classify + extract of one document reach the model back to back.
+    processor, t = make(3, model=1)
+    await processor.process(urls(10))
+    pairs = [t.events[i:i + 2] for i in range(0, len(t.events), 2)]
+    check("model limit 1: never 2 model calls at once", t.model_peak == 1, f"model_peak={t.model_peak}")
+    check("each classify is immediately followed by its own extract",
+          all(a == ("classify", b[1]) and b[0] == "extract" for a, b in pairs), str(t.events[:6]))
+    check("downloads still overlap the model (outer limit 3)", t.downloading_peak >= 2, f"downloading_peak={t.downloading_peak}")
+    processor, t = make(4, model=2)
+    await processor.process(urls(12))
+    check("model limit 2: at most 2 in the model, 2 reached", t.model_peak == 2, f"model_peak={t.model_peak}")
+    processor, t = make(3, model=1, crash={4})
+    docs = flat(await processor.process(urls(10)))
+    check("model slot released after a classify crash", docs[4][2] == "internal error" and sum(d[2] is None for d in docs.values()) == 9)
+
     for raw, want in [("3", 3), ("0", 1), ("-4", 1)]:
         os.environ["MAX_CONCURRENT_DOCUMENTS"] = raw
         get_settings.cache_clear()
         check(f"MAX_CONCURRENT_DOCUMENTS={raw} -> {want}", get_settings().max_concurrent_documents == want)
+        os.environ["MODEL_PARALLEL_REQUESTS"] = raw
+        get_settings.cache_clear()
+        check(f"MODEL_PARALLEL_REQUESTS={raw} -> {want}", get_settings().model_parallel_requests == want)
     get_settings.cache_clear()
 
     print(f"\n{sum(results)}/{len(results)} passed")

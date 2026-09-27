@@ -24,7 +24,7 @@ from app.main import app
 from app.pipelines.base import BaseDocumentPipeline, ExtractionError
 from app.pipelines.registry import PipelineRegistry
 from app.services.classifier import DocumentClassifier
-from app.services.document_processor import DocumentProcessor
+from app.services.document_processor import DocumentProcessor, ModelUnavailableError
 from app.services.downloader import DocumentDownloader, DownloadedDocument, DownloadError, FileKind
 from app.services.ollama import OllamaClient
 
@@ -69,6 +69,14 @@ class FailingPassportPipeline(BaseDocumentPipeline):
         raise ExtractionError("passport extraction failed: Ollama request timed out")
 
 
+class CountingDownloader(SampleDownloader):
+    calls = 0
+
+    async def download(self, url, dest_dir, name):
+        self.calls += 1
+        return await super().download(url, dest_dir, name)
+
+
 class BrokenDownloader(DocumentDownloader):
     async def download(self, url, dest_dir, name):
         raise RuntimeError("secret document text that must not leak")
@@ -109,12 +117,13 @@ async def main_request(processor: DocumentProcessor) -> None:
         body = response.json()
         print(json.dumps(body, indent=2))
 
+        # The model may print a name as "John Doe" or "JOHN DOE"; grouping ignores case, so the test does too.
         owners = [g["ownerName"] for g in body]
         check("groups in first-seen order, null last",
-              owners == ["John Doe", "MARIA DOE", "RAVI SHARMA", "ALEX KUMAR", "Sara Lee", None], str(owners))
+              [o and o.casefold() for o in owners] == ["john doe", "maria doe", "ravi sharma", "alex kumar", "sara lee", None], str(owners))
         docs = by_index(body)
         check("every document appears once, sourceIndex 0-12", sorted(docs) == list(range(len(urls))), str(sorted(docs)))
-        john = next(g for g in body if g["ownerName"] == "John Doe")
+        john = next((g for g in body if (g["ownerName"] or "").casefold() == "john doe"), {"documents": []})
         check("John Doe: passport PNG + tax return + passport PDF",
               [d["sourceIndex"] for d in john["documents"]] == [0, 2, 4])
 
@@ -165,14 +174,17 @@ async def failure_modes(settings, ollama: OllamaClient, downloader: DocumentDown
     owner, d = docs[1]
     check("type without a pipeline -> data null, no error", d["documentType"] == "idCard" and d["data"] is None and d["error"] is None, str(d))
 
-    # Ollama down: every document fails at classification, the request still returns.
+    # Ollama down: detected up front, before any download (the route turns this into 503).
     down = OllamaClient.from_settings(dataclasses.replace(settings, ollama_host="http://localhost:1"))
-    processor = DocumentProcessor(downloader, DocumentClassifier(down), PipelineRegistry.build(down), settings)
-    groups = [g.model_dump(mode="json") for g in await processor.process(urls)]
-    check("Ollama down -> all in null group with a classification error",
-          len(groups) == 1 and groups[0]["ownerName"] is None
-          and all(d["error"].startswith("classification failed: Could not reach Ollama") for d in groups[0]["documents"]), str(groups))
+    counting = CountingDownloader(settings)
+    processor = DocumentProcessor(counting, DocumentClassifier(down), PipelineRegistry.build(down), settings)
+    try:
+        await processor.process(urls)
+        check("Ollama down -> ModelUnavailableError before any download", False, "no error raised")
+    except ModelUnavailableError:
+        check("Ollama down -> ModelUnavailableError before any download", counting.calls == 0, f"downloads={counting.calls}")
     await down.aclose()
+    await counting.aclose()
 
     # A bug (unexpected exception) -> "internal error", no exception text leaked, batch continues.
     processor = DocumentProcessor(BrokenDownloader(settings), DocumentClassifier(ollama), PipelineRegistry.build(ollama), settings)

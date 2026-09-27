@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-27_
+_Last updated: 2026-09-27 (all stages done)_
 
 ---
 
@@ -152,7 +152,7 @@ uvicorn app.main:app --reload          # then in another terminal: curl http://1
 | Machine | Specs | Model | Concurrency | Notes |
 |---|---|---|---|---|
 | Old laptop | 2 GB GPU | `qwen3-vl:4b` (planned) | 1 | Stage 1 was done here |
-| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` removed 2026-09-27) | 2 (benchmarked in Stage 11: 1, 2 and 3 perform the same, because Ollama runs qwen3-vl one request at a time) | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
+| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` removed 2026-09-27) | `MAX_CONCURRENT_DOCUMENTS=2`, `MODEL_PARALLEL_REQUESTS=1` (Ollama runs qwen3-vl one request at a time) | About **14.5 s per document** with the shared-prompt speed-up (was about 22 s). A fanless laptop gets about 25% slower under sustained load | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
 
 ---
 
@@ -421,25 +421,54 @@ Items are ticked only once they have been **built and tested**.
 1. Check the Ollama log for `model architecture does not currently support parallel requests`. If it's there, Ollama runs one request at a time and `MAX_CONCURRENT_DOCUMENTS` 1–2 is enough.
 2. Otherwise set `OLLAMA_NUM_PARALLEL` (for brew: `launchctl setenv OLLAMA_NUM_PARALLEL 2 && brew services restart ollama`; on Linux systemd: `Environment=` in the service), and check `ollama ps`: memory must stay 100% GPU.
 3. Run `caffeinate -i python -u -m scripts.benchmark_concurrency 1 2 3`, **with a cool-down between runs** on laptops, and repeat in reverse order.
-4. Set `MAX_CONCURRENT_DOCUMENTS` to `OLLAMA_NUM_PARALLEL` (or one more) at the fastest setting that keeps 10/10 correct.
+4. Set `MODEL_PARALLEL_REQUESTS` to what Ollama really runs in parallel, and `MAX_CONCURRENT_DOCUMENTS` to that or one more, at the fastest setting that keeps 10/10 correct.
 
-### Stage 12: Hardening ⬜
-- [ ] Consistent error responses. If one document fails, the rest of the batch still completes
-- [ ] Custom `RequestValidationError` handler: keep `type`, `loc` and `msg`, and **remove `input`**, so URLs and tokens aren't repeated back (found in Stage 3)
-- [ ] Temporary files cleaned up on every path
-- [ ] Structured logging with no personal data
-- [ ] Final README pass
+#### Speed-up: shared system prompt + model lock (after Stage 11)
+- [x] **Experiment** (`scratchpad` script, direct `/api/chat` calls, fresh random passports): the same image classified then extracted
+  - A, current (different system prompts): extract **9.0–9.6 s**, total 18.2–19.9 s per document
+  - B, same system prompt for both calls: extract **3.1–3.2 s**, total 12.7–13.5 s
+  - C, B + image in its own user message: 3.2–3.3 s (no better than B)
+  - Why: Ollama puts system prompt + image before the question text, so an identical start lets it **reuse the cached image work**. `prompt_eval_count` does **not** drop (Ollama reports the full prompt size); only the timing shows the reuse. Every passport number was read correctly in every variant
+- [x] `app/services/prompts.py`: **one `SYSTEM_PROMPT` for the classifier and every pipeline**, with a docstring warning that changing it for one call type silently loses the speed-up
+- [x] **The cache is lost if calls interleave.** Ollama has one slot for qwen3-vl, so with 2 documents in flight the order doc A classify → doc B classify → doc A extract evicts A's image. New setting `MODEL_PARALLEL_REQUESTS` (default 1): an inner `asyncio.Semaphore` around each document's classify **and** extract, so the two calls always reach Ollama back to back. Downloads and PDF rendering stay outside it and still overlap
+- [x] Tests (`test_concurrency`, now 25/25): with model limit 1, never 2 model calls at once, and **every classify is immediately followed by its own extract**; downloads still overlap (peak ≥ 2); model limit 2 → peak 2; the slot is released after a classify crash; `MODEL_PARALLEL_REQUESTS` 0 or -4 → 1
+- [x] Accuracy re-checked with the new prompt: `test_classifier` **22/22**, `test_extraction` **47/47**, `test_document_check` **25/25**
+  - The model now prints owner names as printed (`"JOHN DOE"` instead of `"John Doe"`). Grouping ignores case, so nothing broke; the end-to-end test was fixed to compare names case-insensitively too
+- [x] **Benchmark** (limit 2, after a 10-minute rest): **145.0 s for 10 documents (14.5 s/doc), 10/10 correct**, compared with 216–221 s before. **About 34% faster**
+  - A run straight after about an hour of continuous inference (3-minute cool-down only) gave 226 s. The per-call log confirmed the reuse still worked (extract 5.7–7.2 s vs classify 15.5–17.5 s, ratio about 0.4 vs about 1.0 before); heat had simply slowed everything down
+
+### Stage 12: Hardening ✅
+- [x] **Consistent error responses**, always JSON with `detail`: 422 (validation), 503 (model unavailable), 500 (`internal error`). Per-document problems stay in the 200 response (Stage 10)
+- [x] `app/main.py` **`RequestValidationError` handler**: keeps only `type`, `loc` and `msg`; drops `input` and `ctx`, so submitted URLs and tokens are never echoed (the Stage 3 finding)
+- [x] **Decision: 503 when the model is unavailable**, checked up front with `DocumentClassifier.is_ready()` → `OllamaClient.is_model_available()` **before anything is downloaded**. No more 200 with every document failed. If Ollama fails **mid-request**, the affected documents still get per-document errors
+  - `is_model_available()` now uses a **5 s timeout** (it used the 180 s model timeout), returns `False` on non-JSON responses, and matches `name` against `name:latest`
+- [x] **Safe 500s**: an `http` middleware catches any unexpected exception and returns `{"detail": "internal error"}`, logging only the exception **type** and the path. A middleware rather than an exception handler, because Starlette re-raises after a 500 handler and uvicorn would log the full traceback, which could hold document data
+- [x] **Temporary files**: already deleted on every path (tested in Stages 4, 10 and 11: success, failures, cancelled request). Rechecked by the end-to-end test
+- [x] **Logging decision:** keep plain `key=value`-style lines (host, kind, bytes, model, schema, duration, document index, error type). **No JSON logging**: it would need another package or custom formatter code for little gain. No personal data is logged anywhere; httpx/httpcore are at WARNING (Stage 10)
+- [x] **Decision: no whole-request time limit.** Each download (30 s) and each model call (180 s) is already bounded, and cancelling a slow batch halfway would lose finished work. The README says clients need a long timeout (10 documents ≈ 2.5–4 min)
+- [x] **README rewritten** (for people reading the GitHub repo): API, error table, response rules, formats, how it works, **all constraints** (stack, security, download/PDF limits, logging, performance, known limitations), setup, every `.env` key, tests, and how to tune another machine
+- [x] **Tested with `python -m scripts.test_hardening`: 27/27 pass** (no Ollama)
+  - 422 for 9 URLs, 51 URLs, a bad URL, `ftp://`, a missing field, an extra field, a wrong type, and invalid JSON: each has the right `type`, **only** `type`/`loc`/`msg`, and `SECRET123` from the URLs is never echoed. Nothing is downloaded for invalid requests
+  - A valid request → 200, and no URL or token in the response
+  - Model unavailable → **503** `{"detail": "document model is not available, try again later"}` and **0 downloads**
+  - `RuntimeError` containing `SECRET123` → 500 `{"detail": "internal error"}`; the secret is in neither the response nor the logs, and the log line is `Unhandled RuntimeError on POST /document-check`
+  - `GET /` still 200; OpenAPI documents the 503; tokens never reach the logs
+  - `is_model_available`: pulled → True; not pulled → False; `mistral` matches `mistral:latest`; non-JSON, HTTP 500, timeout and unreachable → False; the readiness call uses a 5 s read timeout
+- [x] **Real server** (uvicorn + curl, `OLLAMA_HOST=http://localhost:1`): 10 URLs → **503**; 9 URLs → 422 `too_short` with no input; broken JSON → 422 `json_invalid`; `SECRET123` appears 0 times in the log
+- [x] `test_document_check` updated: Ollama down → `ModelUnavailableError` with **0 downloads**. **25/25**
+- [x] Full regression: `test_downloader` 24/24, `test_pdf` 11/11, `test_grouping` 13/13, `test_pipelines` 20/20, `test_extraction --offline` 39/39, `test_concurrency` 25/25, `test_hardening` 27/27, `test_classifier` 22/22, `test_extraction` 47/47, `test_document_check` 25/25
+- [x] **Security check before pushing:** `git log --all --name-only` shows no `.env`, `documents/`, PDF or image files ever committed; only `.env.example` is tracked
 
 ---
 
 ## 6. File map (what exists now)
 
 ```
-app/main.py                    FastAPI app, lifespan (shared clients), logging, GET /
+app/main.py                    FastAPI app, lifespan (shared clients), logging, 422 handler, 500 middleware, GET /
 app/config.py                  Settings from .env (get_settings)
 app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
-app/api/document_check.py      POST /document-check -> list[OwnerResult] (processor via Depends(get_processor))
+app/api/document_check.py      POST /document-check -> list[OwnerResult]; 503 on ModelUnavailableError
 app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
 app/utils/workspace.py         request_workspace(): private temp dir, always deleted
 app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
@@ -461,10 +490,12 @@ app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard")
 app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 1)
 scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
 app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
-app/services/document_processor.py   DocumentProcessor.process(urls): documents concurrently (shared semaphore), then group
+app/services/document_processor.py   DocumentProcessor.process(urls): readiness check, documents concurrently (outer semaphore + model lock), then group
 scripts/test_document_check.py 25 end-to-end checks (SampleDownloader serves documents/ as https://samples.test/...)
-scripts/test_concurrency.py    17 offline concurrency checks (fakes)
+scripts/test_concurrency.py    25 offline concurrency checks incl. the model lock (fakes)
 scripts/benchmark_concurrency.py   real-model benchmark: 10 fresh random documents per run, accuracy + ollama ps
+app/services/prompts.py        the ONE shared SYSTEM_PROMPT (cache reuse between classify and extract)
+scripts/test_hardening.py      27 offline checks: 422 without input, 503, safe 500, readiness check
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only, no address), driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
@@ -477,13 +508,11 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status:** Stages 1–11 are done. Documents run concurrently behind a shared `asyncio.Semaphore(MAX_CONCURRENT_DOCUMENTS=2)`. The benchmark showed Ollama 0.14.1 runs qwen3-vl one request at a time (it doesn't support parallel requests), so on the M4 about 22 s per document is the ceiling, and heat pushes it towards about 27 s. The model is `qwen3-vl:8b-instruct`, with `PDF_RENDER_DPI=100`.
+**Status: all 12 stages are done, tested and pushed.** `POST /document-check` downloads safely, classifies, groups by owner, extracts passport/Aadhaar/tax-return data, and returns the target JSON. It adds `sourceIndex` and `error` fields, rejects invalid input with a 422 that echoes nothing, and returns 503 if the model is down. About 14.5 s per document on the M4 (qwen3-vl can't run in parallel on Ollama 0.14.1).
 
-**Next action:**
-1. **Stage 12: hardening.**
-   - Custom `RequestValidationError` handler: keep `type`, `loc` and `msg`, **remove `input`** (and `ctx` where it echoes values), so URLs and tokens aren't repeated back. Test 9 URLs, a bad URL, and a missing field.
-   - Decide whether "Ollama down" should return 503 instead of 200 with every document failed (for example, check `is_model_available()` up front, or 503 when all documents fail with an Ollama error). Record it.
-   - Check that temporary files are deleted on every path (already tested: normal, failure, cancel). Check that logging has no personal data (already: host only; httpx silenced) and decide whether structured (key=value or JSON) logs are wanted.
-   - Consider a whole-request time limit, since 10–50 documents at about 22 s each can take 4–18 minutes. At minimum, document it in the README.
-   - Final README pass: setup, `.env` keys, the endpoint with example request and response, the added `sourceIndex`/`error` fields, security measures, the test scripts, and the performance numbers.
-2. Idea for later (not required): if Ollama adds parallel support for qwen3vl, re-run the benchmark.
+**Possible next steps (not required by the brief; ask the user):**
+1. Test on more realistic fake documents: small print, rotated or skewed scans, multi-page full ITR forms. Revisit `PDF_RENDER_DPI` (120–150) and tax return `max_pages` if needed.
+2. Add another document type through the registry (e.g. PAN card or driving licence) to show that the API code doesn't change.
+3. Proper test framework: the `scripts/test_*.py` files are plain scripts. Converting them to pytest would add a package, so ask first (the stack rule says no other packages).
+4. Re-run `benchmark_concurrency` after `brew upgrade ollama`, in case a newer Ollama supports parallel qwen3vl requests.
+5. Optional hardening: API authentication and rate limiting, if the service is ever exposed beyond localhost.

@@ -62,14 +62,14 @@ class OllamaClient:
         await self.aclose()
 
     async def is_model_available(self) -> bool:
-        """True if Ollama is running and the configured model is pulled."""
+        """True if Ollama is running and the configured model is pulled. Quick: 5 s timeout."""
         try:
-            response = await self._http.get("/api/tags")
+            response = await self._http.get("/api/tags", timeout=5.0)
             response.raise_for_status()
-        except httpx.HTTPError:
+            names = {m.get("name") for m in response.json().get("models", [])}
+        except (httpx.HTTPError, ValueError):  # ValueError: not JSON
             return False
-        names = {m.get("name") for m in response.json().get("models", [])}
-        return self.model in names
+        return self.model in names or f"{self.model}:latest" in names
 
     async def generate_structured(
         self,

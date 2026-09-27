@@ -4,12 +4,7 @@ from pathlib import Path
 
 from app.schemas.classification import Classification, DocumentType
 from app.services.ollama import OllamaClient, OllamaError
-
-SYSTEM_PROMPT = (
-    "You are a careful document classifier for identity and tax documents. "
-    "Report only what is clearly visible in the image. Never guess or invent values. "
-    "If a field is not visible or not readable, use null."
-)
+from app.services.prompts import SYSTEM_PROMPT
 
 CLASSIFY_PROMPT = """Classify this document.
 
@@ -59,6 +54,10 @@ class DocumentClassifier:
         self._ollama = ollama
         # Page 1 identifies almost every document; each extra page costs up to ~2,000 tokens.
         self._max_pages = max_pages
+
+    async def is_ready(self) -> bool:
+        """True if the model can be used right now."""
+        return await self._ollama.is_model_available()
 
     async def classify(self, page_images: list[Path]) -> Classification:
         if not page_images:

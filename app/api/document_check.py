@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.schemas.request import DocumentCheckRequest
 from app.schemas.response import OwnerResult
-from app.services.document_processor import DocumentProcessor
+from app.services.document_processor import DocumentProcessor, ModelUnavailableError
 
 router = APIRouter(tags=["documents"])
 
@@ -12,10 +12,17 @@ def get_processor(request: Request) -> DocumentProcessor:
     return request.app.state.processor
 
 
-@router.post("/document-check", response_model=list[OwnerResult])
+@router.post(
+    "/document-check",
+    response_model=list[OwnerResult],
+    responses={503: {"description": "The document model (Ollama) is not available; nothing was downloaded."}},
+)
 async def document_check(
     request: DocumentCheckRequest,
     processor: DocumentProcessor = Depends(get_processor),
 ) -> list[OwnerResult]:
     """Download, classify and extract every document, grouped by owner. One bad document never fails the batch."""
-    return await processor.process([str(url) for url in request.documentUrls])
+    try:
+        return await processor.process([str(url) for url in request.documentUrls])
+    except ModelUnavailableError:
+        raise HTTPException(status_code=503, detail="document model is not available, try again later") from None

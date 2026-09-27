@@ -21,6 +21,7 @@ class Settings:
     pdf_render_dpi: int
     max_pdf_pages: int
     max_concurrent_documents: int
+    model_parallel_requests: int
 
 
 @lru_cache
@@ -38,4 +39,5 @@ def get_settings() -> Settings:
         pdf_render_dpi=int(os.getenv("PDF_RENDER_DPI", "100")),
         max_pdf_pages=int(os.getenv("MAX_PDF_PAGES", "10")),
         max_concurrent_documents=max(1, int(os.getenv("MAX_CONCURRENT_DOCUMENTS", "2"))),
+        model_parallel_requests=max(1, int(os.getenv("MODEL_PARALLEL_REQUESTS", "1"))),
     )

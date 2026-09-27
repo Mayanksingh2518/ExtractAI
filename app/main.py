@@ -2,7 +2,9 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from app.api.document_check import router as document_check_router
 from app.config import get_settings
@@ -17,6 +19,7 @@ logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s 
 # httpx logs every request's full URL at INFO; document URLs can carry access tokens. Our own logs record the host only.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logger = logging.getLogger("app")
 
 
 @asynccontextmanager
@@ -42,6 +45,24 @@ app = FastAPI(
 )
 
 app.include_router(document_check_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 without `input` or `ctx`: FastAPI's default echoes the submitted values (URLs may hold tokens)."""
+    errors = [{"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
+@app.middleware("http")
+async def internal_error_middleware(request: Request, call_next):
+    """Any unexpected exception -> JSON 500. Only the exception type is logged: its message or
+    traceback could contain document data. (An exception handler would still let uvicorn log it.)"""
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        logger.error("Unhandled %s on %s %s", type(exc).__name__, request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "internal error"})
 
 
 @app.get("/")

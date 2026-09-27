@@ -8,12 +8,7 @@ from typing import ClassVar, TypeVar
 from pydantic import BaseModel
 
 from app.services.ollama import OllamaClient, OllamaError
-
-SYSTEM_PROMPT = (
-    "You extract data from identity and tax documents. "
-    "Report only values that are clearly printed in the image, copied exactly. "
-    "Never guess, calculate or invent values. If a field is not visible or not readable, use null."
-)
+from app.services.prompts import SYSTEM_PROMPT
 
 M = TypeVar("M", bound=BaseModel)
 
