@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (Stages 13-15 done; 16-17 in progress)_
+_Last updated: 2026-09-28 (all 17 stages done)_
 
 ---
 
@@ -113,7 +113,7 @@ git pull
 python3 --version                      # need 3.11 or 3.12
 [ -d .venv ] || python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt     # app packages + pytest (dev only)
 [ -f .env ] || cp .env.example .env
 diff .env .env.example                 # new keys in .env.example? add them to .env
 
@@ -127,13 +127,15 @@ ollama list                            # is OLLAMA_MODEL from .env pulled?
 ollama pull qwen3-vl:8b-instruct       # or the model chosen for this machine
 
 # Fake test data + checks
-python -m scripts.make_sample_documents
-python -m scripts.test_ollama documents/sample_passport.png
+python -m scripts.make_sample_documents && python -m scripts.make_realistic_documents
+python -m scripts.check_ollama documents/sample_passport.png
+pytest                                 # fast offline tests (~15 s); `caffeinate -i pytest -m ""` runs everything
 uvicorn app.main:app --reload          # then in another terminal: curl http://127.0.0.1:8000/
 ```
 
 **Expected:**
-- `test_ollama` prints `model available: True` and `{'documentType': 'passport', ..., 'ownerName': 'JOHN DOE'}`.
+- `check_ollama` prints `model available: True` and `{'documentType': 'passport', ..., 'ownerName': 'JOHN DOE'}`.
+- `pytest` ends with `... passed, ... deselected` and no failures.
 - `GET /` returns `{"status":"ok","service":"document-intelligence-api"}`.
 
 **Picking the model from RAM:**
@@ -152,13 +154,15 @@ uvicorn app.main:app --reload          # then in another terminal: curl http://1
 | Machine | Specs | Model | Concurrency | Notes |
 |---|---|---|---|---|
 | Old laptop | 2 GB GPU | `qwen3-vl:4b` (planned) | 1 | Stage 1 was done here |
-| MacBook Air M4 | 16 GB unified, Ollama 0.14.1, Python 3.11.14 | `qwen3-vl:8b-instruct` (`qwen3-vl:8b` removed 2026-09-27) | `MAX_CONCURRENT_DOCUMENTS=2`, `MODEL_PARALLEL_REQUESTS=1` (Ollama runs qwen3-vl one request at a time) | About **14.5 s per document** with the shared-prompt speed-up (was about 22 s). A fanless laptop gets about 25% slower under sustained load | Stages 2–3 were done here. Runs 100% on the GPU, about 7.4 GB at `num_ctx` 8192. About 7.7 s per document once loaded |
+| MacBook Air M4 | 16 GB unified, **Ollama 0.34.4** (upgraded from 0.14.1 on 2026-09-28), Python 3.11.14 | `qwen3-vl:8b-instruct` | `MAX_CONCURRENT_DOCUMENTS=2`, `MODEL_PARALLEL_REQUESTS=1` (qwen3-vl still runs one request at a time on 0.34.4) | 0.14.1: about **14.5 s per document** rested (145 s / 10). 0.34.4: about 20 s per document (198 s, 205 s), cause not isolated (see Stage 16). Runs 100% on the GPU: 5.9 GB on 0.34.4 (7.4 GB on 0.14.1) at `num_ctx` 8192 |
 
 ---
 
 ## 5. Progress
 
 Items are ticked only once they have been **built and tested**.
+
+> Stages 1–16 were tested with the `scripts/test_*.py` scripts named below. **Since Stage 17 those checks live in `tests/` and run with pytest**; the old script commands no longer exist.
 
 ### Stage 1: Project skeleton ✅
 - [x] Git repo, folder structure (`app/api`, `schemas`, `services`, `pipelines`, `utils`)
@@ -521,51 +525,71 @@ Items are ticked only once they have been **built and tested**.
 - [x] **Real server** (uvicorn, random 43-character key, limit 2/60 s): no key → 401; wrong key → 401; valid → 200, 200, then **429 with `retry-after: 60`**; `GET /` → 200; **key found 0 times in the server log**. `API_KEYS=too-short` → uvicorn refuses to start with `ValueError: API_KEYS: every key must be at least 16 characters`
 - [x] `test_hardening` turns the limiter off (it sends more than 10 requests). Regression: `test_hardening` 32/32, `test_grouping` 13/13, `test_pipelines` 27/27, `test_concurrency` 25/25, `test_pdf` 11/11, `test_downloader` 24/24, `test_extraction --offline` 46/46, `test_document_check` **25/25** (through the real app with the default limiter on)
 
+### Stage 16: Ollama upgrade and re-benchmark ✅
+- [x] `brew upgrade ollama`: **0.14.1 → 0.34.4**, then `brew services restart ollama`. `qwen3-vl:8b-instruct` was kept (no re-download)
+- [x] Smoke test (`check_ollama`): passport / JOHN DOE. The new version loads qwen3-vl through llama.cpp (`llama_model_loader`), 37/37 layers on the GPU; **memory 5.9 GB instead of 7.4 GB** (the brew service now enables flash attention and a q8_0 KV cache)
+- [x] **Parallel check:** set `OLLAMA_NUM_PARALLEL=2` (`launchctl setenv` + restart). The log still says **`WARN "model architecture does not currently support parallel requests" architecture=qwen3vl`**, and llama.cpp reports `n_seq_max = 1`. **qwen3-vl still can't run in parallel**, so the parallel benchmarks (limit 2/3 with `MODEL_PARALLEL_REQUESTS=2`) were skipped as pointless. Restored with `launchctl unsetenv` + restart; the log shows `OLLAMA_NUM_PARALLEL:1`
+- [x] **The shared-prompt speed-up still works:** 3 fresh random passports classified then extracted: classify 14.3 / 15.4 / 15.9 s, extract 3.3 / 3.3 / 3.4 s (ratio about 0.22; 0.14.1 gave the same kind of numbers)
+- [x] **Benchmark** (`benchmark_concurrency 2`, 10 fresh documents, default settings): **198.5 s** after a 5-minute cool-down and **205.4 s** after a 10-minute rest, both **10/10 correct**, 5.9 GB, 100% GPU
+  - Compared with **145 s** on 0.14.1 (rested). **Cause not isolated:** per-call timings on the same kind of image are unchanged, the Mac was on **battery at 28%** (Low Power Mode off) after a full day of inference, and a fanless Air slows under heat (Stage 11 saw 226 s when hot). 0.14.1 is no longer installed, so a same-conditions A/B isn't possible
+  - **To do on a cold machine on mains power:** `caffeinate -i python -u -m scripts.benchmark_concurrency 2`. If it's still about 200 s, the new engine is slower for this model; consider pinning an older Ollama
+- **Decision: keep `MAX_CONCURRENT_DOCUMENTS=2`, `MODEL_PARALLEL_REQUESTS=1`**, unchanged: Ollama still runs qwen3-vl one request at a time
+
+### Stage 17: Tests converted to pytest ✅
+- [x] **Decision (approved by the user asking for all 5 steps):** pytest is the only new package, and it's **dev-only** in `requirements-dev.txt` (`-r requirements.txt` + `pytest>=8`). The app's runtime stack is unchanged. Async tests use **anyio's pytest plugin** (anyio is already installed with httpx/Starlette), so there's no `pytest-asyncio`
+- [x] `pytest.ini`: `testpaths = tests`, `pythonpath = .`, markers `model` (needs Ollama) and `network` (needs internet), **`addopts = -m "not model and not network"`**, so plain `pytest` is the fast offline run; PyMuPDF's SWIG deprecation warnings are filtered
+- [x] `tests/conftest.py`: `samples` (generates missing fake documents through the new `make_all()` in both generator scripts), `settings`, `ollama` (**skips** the test if the model isn't available), `workspaces`, and an autouse fixture that restores `app.dependency_overrides`, `api_keys` and `rate_limiter` after each test
+- [x] Every old `scripts/test_*.py` check was moved to `tests/` (checks grouped into test functions with plain `assert`, cases parametrized) and the old scripts deleted:
+  - `test_url_safety.py` is **new**: the 22 Stage 4 SSRF cases were only run by hand before; 17 run offline (IP literals, localhost, IPv6 tricks, decimal IP, schemes, credentials), 5 need DNS
+  - `test_document_check.py`: the 13-URL request runs **once** in a module-scoped fixture, and each expectation (per document, grouping, no echoed URLs, workspace deleted) is its own test
+  - `test_realistic.py` takes its cases from `scripts/evaluate_realistic.py` (was `scripts/test_realistic.py`: still the field-by-field report tool with `--dpi` / `--pages`)
+  - `scripts/test_ollama.py` → `scripts/check_ollama.py` (a manual tool, not a test)
+- [x] **Tested:**
+  - `pytest`: **177 passed, 74 deselected in 16 s**
+  - `caffeinate -i pytest -m ""`: **251 passed in 9 min 48 s** (slowest: the 13-URL request 88 s, full ITR 68 s, card scan 51 s)
+  - `OLLAMA_HOST=http://localhost:1 pytest -m model`: **45 skipped**, none failed
+  - **The tests catch real bugs** (each deliberate bug added then reverted with `git checkout`): context-guard margin 0 → 1 test failed; auth check disabled → 7 failed; "always make the 2nd call" → 1 failed; null words kept by `clean_text` → 6 failed
+
 ---
 
 ## 6. File map (what exists now)
 
 ```
-app/main.py                    FastAPI app, lifespan (shared clients), logging, 422 handler, 500 middleware, GET /
-app/config.py                  Settings from .env (get_settings)
-app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
-app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
+app/main.py                    FastAPI app, lifespan (shared clients), logging, 422 handler, 500 middleware, GET /; api_keys + rate_limiter on app.state
+app/config.py                  Settings from .env (get_settings, parse_api_keys)
 app/api/document_check.py      POST /document-check -> list[OwnerResult]; 503 on ModelUnavailableError; authorize dependency
-app/api/security.py           optional X-API-Key auth + RateLimiter (sliding window per key / IP) - Stage 15
-scripts/test_security.py       33 offline auth + rate-limit checks
-app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
-app/utils/workspace.py         request_workspace(): private temp dir, always deleted
-app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
-scripts/test_downloader.py     24 live + mock download/security checks
-app/utils/pdf.py               to_page_images(): PDF -> PNG pages, images pass through
-scripts/test_pdf.py            11 conversion checks
-app/schemas/classification.py  DocumentType enum + Classification (documentName first!)
-app/services/classifier.py     DocumentClassifier.classify(page_images) -> Classification (+ check_type_against_name)
-scripts/test_classifier.py     12 offline cross-checks + 8 sample + 2 error classification checks
-app/services/grouping.py       group_by_owner(items, owner_of) -> [OwnerGroup(ownerName, documents)]
-scripts/test_grouping.py       13 offline grouping checks
-app/pipelines/base.py          BaseDocumentPipeline(ABC): extract(page_images), _generate helper, ExtractionError
-app/pipelines/registry.py      PipelineRegistry (get / extract / build) + PIPELINE_CLASSES
-scripts/test_pipelines.py      27 offline pipeline/registry checks (incl. page 1 first, more pages only when needed)
-app/utils/normalize.py         clean_text, to_iso_date, to_aadhaar_number, to_amount, to_pan
+app/api/security.py            optional X-API-Key auth + RateLimiter (sliding window per key / IP)
+app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
+app/schemas/classification.py  DocumentType enum (+ panCard) + Classification (documentName first!)
 app/schemas/extraction.py      PassportData, AadhaarData (aadharNumber), TaxReturnData (assessmentYear), PanCardData
+app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
+app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model; context-window guard
+app/services/prompts.py        the ONE shared SYSTEM_PROMPT (cache reuse between classify and extract)
+app/services/classifier.py     DocumentClassifier.classify(page_images) -> Classification (+ check_type_against_name)
+app/services/grouping.py       group_by_owner(items, owner_of) -> [OwnerGroup(ownerName, documents)]
+app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
+app/services/document_processor.py   DocumentProcessor.process(urls): readiness check, documents concurrently (outer semaphore + model lock), then group
+app/pipelines/base.py          BaseDocumentPipeline(ABC): extract(page_images); _generate = page 1 first, more pages only if fields are null
+app/pipelines/registry.py      PipelineRegistry (get / extract / build) + PIPELINE_CLASSES
 app/pipelines/passport.py      PassportPipeline      (document_type "passport")
 app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard", max_pages 2)
 app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 3)
-app/pipelines/pan_card.py      PanCardPipeline       (document_type "panCard") - Stage 14
-scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
-app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
-app/services/document_processor.py   DocumentProcessor.process(urls): readiness check, documents concurrently (outer semaphore + model lock), then group
-scripts/test_document_check.py 25 end-to-end checks (SampleDownloader serves documents/ as https://samples.test/...)
-scripts/test_concurrency.py    25 offline concurrency checks incl. the model lock (fakes)
-scripts/benchmark_concurrency.py   real-model benchmark: 10 fresh random documents per run, accuracy + ollama ps
-app/services/prompts.py        the ONE shared SYSTEM_PROMPT (cache reuse between classify and extract)
-scripts/test_hardening.py      32 offline checks: 422 without input, 503, safe 500, readiness check, context-window guard
-scripts/make_realistic_documents.py   harder fake documents (realistic_*): dense passport, phone photo, sideways scan, e-Aadhaar, card scan front/back, 5-page ITR
-scripts/test_realistic.py      classify + extract the realistic documents field by field (--dpi, --pages overrides)
-app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
-scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only, no address), driving licence, PAN card, receipt into documents/
-scripts/test_ollama.py         manual check of the Ollama service
+app/pipelines/pan_card.py      PanCardPipeline       (document_type "panCard")
+app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
+app/utils/workspace.py         request_workspace(): private temp dir, always deleted
+app/utils/pdf.py               to_page_images(): PDF -> PNG pages, images pass through
+app/utils/normalize.py         clean_text, to_iso_date, to_aadhaar_number, to_amount, to_pan
+
+tests/conftest.py              fixtures: samples (generated if missing), settings, ollama (skips if unavailable), app-state cleanup
+tests/test_*.py                251 pytest tests: 177 offline, 45 `model`, 47 `network` (some are both) (see README "Tests")
+pytest.ini                     testpaths, pythonpath, markers; plain `pytest` = offline only
+requirements-dev.txt           requirements.txt + pytest (dev only)
+
+scripts/make_sample_documents.py     make_all(): fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only), driving licence, PAN card, receipt
+scripts/make_realistic_documents.py  make_all(): realistic_* (dense passport, phone photo, sideways scan, e-Aadhaar, card scan front/back, 5-page ITR, PAN card)
+scripts/check_ollama.py              manual check that the model answers (was test_ollama.py)
+scripts/evaluate_realistic.py        field-by-field report on realistic_*; --dpi / --pages to compare settings (was test_realistic.py); its CASES feed tests/test_realistic.py
+scripts/benchmark_concurrency.py     real-model benchmark: 10 fresh random documents per run, accuracy + ollama ps
 README.md                      public project README
 CLAUDE.md                      tells the AI assistant to start from this file
 PROGRESS.md                    this file
@@ -575,12 +599,14 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: Stages 1–15 are done, tested and pushed.** The user asked (2026-09-28) to do all 5 optional next steps, as Stages 13–17, one at a time, each tested, recorded here and pushed:
+**Status: all 17 stages are done, tested and pushed.** The brief (Stages 1–12) plus the 5 optional steps the user asked for on 2026-09-28:
+- **13:** realistic fake documents; extra pages only when page 1 leaves fields null (Aadhaar 2, tax return 3); `taxDue` = balance payable; context-window guard; DPI 100 kept (150: same accuracy, 2× slower)
+- **14:** `panCard` added through the registry with no API changes
+- **15:** optional `X-API-Key` auth and per-client rate limiting (on by default: 10/min)
+- **16:** Ollama 0.34.4: qwen3-vl **still** can't run in parallel; 5.9 GB instead of 7.4 GB; benchmark about 200 s vs 145 s before, cause not isolated
+- **17:** pytest (dev-only): `pytest` (offline, 16 s) / `caffeinate -i pytest -m ""` (everything, about 10 min)
 
-- [x] **Stage 13:** realistic documents, multi-page extraction, DPI re-check (done)
-- [x] **Stage 14:** PAN card (`panCard`) added through the registry, with no API changes (done)
-- [x] **Stage 15:** optional API-key authentication and rate limiting (done)
-- [ ] **Stage 16:** `brew upgrade ollama`, then check whether qwen3-vl now runs in parallel, and re-run `benchmark_concurrency`
-- [ ] **Stage 17:** convert the `scripts/test_*.py` checks to pytest. **The user approved the extra package** by asking for all 5 steps; keep it in a separate dev-only requirements file so the runtime stack stays unchanged
-
-**Next action:** Stage 16.
+**Possible next steps (ask the user):**
+1. Re-run `caffeinate -i python -u -m scripts.benchmark_concurrency 2` on a **cold Mac on mains power**, to settle whether Ollama 0.34.4 is slower than 0.14.1 (Stage 16).
+2. Test with real-world scans (only with documents the user has the right to process), and adjust DPI / `max_pages` if needed.
+3. Add a driving licence type the same way as the PAN card (Stage 14).

@@ -1,0 +1,4 @@
+# Development only: the test runner. The app itself needs only requirements.txt.
+# Async tests use anyio's pytest plugin (anyio is already installed with httpx/Starlette).
+-r requirements.txt
+pytest>=8

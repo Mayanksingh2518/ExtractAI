@@ -316,18 +316,21 @@ ITR = {"ay": "2024-25", "pan": "AKRPM4821Q", "name": "ARJUN MEHTA", "dob": "22/0
        "address": "B-204, Green Park Society, Kothrud, Pune, Maharashtra 411038"}
 
 
-if __name__ == "__main__":
-    OUTPUT_DIR.mkdir(exist_ok=True)
+def make_all(out: Path = OUTPUT_DIR) -> list[Path]:
+    out.mkdir(exist_ok=True)
     passport_a = passport_page(PASSPORT_A)
-    passport_a.save(OUTPUT_DIR / "realistic_passport.png")
-    phone_scan(passport_page(PASSPORT_B), angle=4.0, seed=7).save(
-        OUTPUT_DIR / "realistic_passport_photo.jpg", quality=55)
-    image_pdf(OUTPUT_DIR / "realistic_passport_sideways.pdf", [passport_a], rotate=90)
-    e_aadhaar(OUTPUT_DIR / "realistic_e_aadhaar.pdf", E_AADHAAR)
-    image_pdf(OUTPUT_DIR / "realistic_aadhaar_card_scan.pdf",
+    passport_a.save(out / "realistic_passport.png")
+    phone_scan(passport_page(PASSPORT_B), angle=4.0, seed=7).save(out / "realistic_passport_photo.jpg", quality=55)
+    image_pdf(out / "realistic_passport_sideways.pdf", [passport_a], rotate=90)
+    e_aadhaar(out / "realistic_e_aadhaar.pdf", E_AADHAAR)
+    image_pdf(out / "realistic_aadhaar_card_scan.pdf",
               [card_on_a4_scan(aadhaar_card("front", AADHAAR_CARD), 1.5),
                card_on_a4_scan(aadhaar_card("back", AADHAAR_CARD), -1.0)])
-    full_itr(OUTPUT_DIR / "realistic_itr_full.pdf", ITR)
-    pan_card(PAN).save(OUTPUT_DIR / "realistic_pan_card.png")
-    for path in sorted(OUTPUT_DIR.glob("realistic_*")):
+    full_itr(out / "realistic_itr_full.pdf", ITR)
+    pan_card(PAN).save(out / "realistic_pan_card.png")
+    return sorted(out.glob("realistic_*"))
+
+
+if __name__ == "__main__":
+    for path in make_all():
         print(f"saved {path}")

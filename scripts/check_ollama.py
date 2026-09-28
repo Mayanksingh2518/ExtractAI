@@ -1,6 +1,6 @@
 """Manual check for app/services/ollama.py.
 
-Usage:  python -m scripts.test_ollama documents/sample_passport.png
+Usage:  python -m scripts.check_ollama documents/sample_passport.png
 """
 
 import asyncio

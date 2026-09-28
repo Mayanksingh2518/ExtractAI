@@ -139,17 +139,21 @@ def make_tax_return(path: Path) -> None:
     document.close()
 
 
-if __name__ == "__main__":
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    passport_png = OUTPUT_DIR / "sample_passport.png"
+def make_all(out: Path = OUTPUT_DIR) -> list[Path]:
+    out.mkdir(exist_ok=True)
+    passport_png = out / "sample_passport.png"
     make_passport(passport_png)
-    make_scanned_pdf(passport_png, OUTPUT_DIR / "sample_passport_scan.pdf")
-    make_tax_return(OUTPUT_DIR / "sample_tax_return.pdf")
-    make_aadhaar(OUTPUT_DIR / "sample_aadhaar.png")
-    make_aadhaar_front(OUTPUT_DIR / "sample_aadhaar_front.png")
-    make_passport_without_name(OUTPUT_DIR / "sample_passport_no_name.png")
-    make_driving_licence(OUTPUT_DIR / "sample_driving_licence.png")
-    make_receipt(OUTPUT_DIR / "sample_receipt.png")
-    make_pan_card(OUTPUT_DIR / "sample_pan_card.png")
-    for path in sorted(OUTPUT_DIR.glob("sample_*")):
+    make_scanned_pdf(passport_png, out / "sample_passport_scan.pdf")
+    make_tax_return(out / "sample_tax_return.pdf")
+    make_aadhaar(out / "sample_aadhaar.png")
+    make_aadhaar_front(out / "sample_aadhaar_front.png")
+    make_passport_without_name(out / "sample_passport_no_name.png")
+    make_driving_licence(out / "sample_driving_licence.png")
+    make_receipt(out / "sample_receipt.png")
+    make_pan_card(out / "sample_pan_card.png")
+    return sorted(out.glob("sample_*"))
+
+
+if __name__ == "__main__":
+    for path in make_all():
         print(f"saved {path}")

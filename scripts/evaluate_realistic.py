@@ -1,7 +1,7 @@
 """Classify + extract the realistic FAKE documents and report every field.
 
 Usage:  python -m scripts.make_realistic_documents
-        caffeinate -i python -u -m scripts.test_realistic [--dpi 150] [--pages taxReturn=1 idCard=1]
+        caffeinate -i python -u -m scripts.evaluate_realistic [--dpi 150] [--pages taxReturn=1 idCard=1]
 --dpi overrides PDF_RENDER_DPI; --pages overrides a pipeline's max_pages (to compare settings).
 Needs Ollama with OLLAMA_MODEL pulled.
 """

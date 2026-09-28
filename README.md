@@ -137,7 +137,7 @@ POST /document-check
 
 ### Design rules
 
-- **Stack:** Python 3.11/3.12, FastAPI, Uvicorn, Pydantic v2, httpx, PyMuPDF (`import pymupdf`, not `fitz`), Pillow, python-dotenv, Ollama. **No other frameworks or packages.** For example, settings use a plain dataclass, not `pydantic-settings`, and Ollama is called without the `ollama` Python package.
+- **Stack:** Python 3.11/3.12, FastAPI, Uvicorn, Pydantic v2, httpx, PyMuPDF (`import pymupdf`, not `fitz`), Pillow, python-dotenv, Ollama. **No other frameworks or packages** at runtime (pytest is a dev-only test dependency in `requirements-dev.txt`). For example, settings use a plain dataclass, not `pydantic-settings`, and Ollama is called without the `ollama` Python package.
 - **The LLM stays local.** `OLLAMA_HOST` must point at your own machine or network.
 - **Configuration comes from `.env`** through `app/config.py`. No secrets are hardcoded.
 
@@ -175,7 +175,7 @@ POST /document-check
 
 - **About 14.5 s per document** (10 documents in 145 s) with the shared-prompt speed-up, compared with about 22 s (216–221 s) without it. Each document needs 2 model calls. A fanless laptop gets about 25% slower under sustained load.
 - **A request can take minutes:** 10 documents take about 2–4 minutes and 50 documents 10+ minutes, so clients need a long timeout. There is no overall time limit on a request yet.
-- **Ollama 0.14.1 can't run qwen3-vl requests in parallel.** It ignores `OLLAMA_NUM_PARALLEL` for this model and forces `Parallel:1`. `MAX_CONCURRENT_DOCUMENTS` above 1–2 therefore only lengthens Ollama's queue; it still limits load, and helps on machines where Ollama does run in parallel.
+- **Ollama can't run qwen3-vl requests in parallel** (checked on 0.14.1 and again on 0.34.4). It ignores `OLLAMA_NUM_PARALLEL` for this model (`model architecture does not currently support parallel requests`, one sequence). `MAX_CONCURRENT_DOCUMENTS` above 1–2 therefore only lengthens Ollama's queue; it still limits load, and helps on machines where Ollama does run in parallel.
 - **Only page 1** is used for classification. Extraction also reads page 1 first, and only if fields are still `null` does it read again with up to `max_pages` pages (passport 1, Aadhaar 2 for a front/back scan, tax return 3 for a full ITR form), filling in only the missing fields. One-page documents and ITR-V acknowledgements take one extract call (about 3.5 s); a full ITR takes about 55 s.
 - Each page costs about 1,000 tokens at 100 DPI (up to about 2,000 at higher DPI). If the input fills the context window, Ollama cuts it **silently** and answers from part of it; the app detects this (`prompt_eval_count` within 256 tokens of `num_ctx`) and reports an error for that document instead. Keep `max_pages` × page tokens within `OLLAMA_NUM_CTX`.
 - **`PDF_RENDER_DPI=100`** read every value correctly, including the realistic samples: 6.5–8 pt print, a card scanned small on an A4 page, a tilted phone photo and a sideways scan. 150 DPI gave the same accuracy at about twice the time for PDFs, so raise it only if real documents show misreads.
@@ -234,7 +234,7 @@ Use the `-instruct` models. The thinking variant ignores `think: false` and was 
 | `PDF_RENDER_DPI` | `100` | PDF page render resolution |
 | `MAX_PDF_PAGES` | `10` | Pages rendered per PDF; the rest are skipped |
 | `MAX_CONCURRENT_DOCUMENTS` | `2` | Documents processed at once, **shared by all requests** |
-| `MODEL_PARALLEL_REQUESTS` | `1` | Documents in the model at once. Set it to what Ollama really runs in parallel (1 for qwen3-vl on Ollama 0.14) |
+| `MODEL_PARALLEL_REQUESTS` | `1` | Documents in the model at once. Set it to what Ollama really runs in parallel (1 for qwen3-vl, up to at least Ollama 0.34) |
 | `API_KEYS` | empty | Comma-separated API keys (16+ characters each) for `X-API-Key`. Empty = no authentication. Make one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `RATE_LIMIT_REQUESTS` | `10` | Requests per client per window; `0` = no limit |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window |
@@ -259,23 +259,40 @@ Because of SSRF protection, the API **cannot** fetch documents from `localhost` 
 
 ## Tests
 
-Every test uses **fake** documents made by `python -m scripts.make_sample_documents` and `python -m scripts.make_realistic_documents`, written to `documents/` (gitignored). Run long tests with `caffeinate -i` so the Mac doesn't sleep.
+Tests use **pytest** (dev only: `pip install -r requirements-dev.txt`; the app itself doesn't need it) and **fake** documents only. Missing samples are generated into `documents/` (gitignored) automatically; you can also run `python -m scripts.make_sample_documents` and `python -m scripts.make_realistic_documents`.
 
-| Command | Needs Ollama | Checks |
+```zsh
+pytest                         # fast offline tests (~15 s): no Ollama, no internet
+pytest -m network              # + real downloads and DNS (httpbin.org, w3.org, badssl.com, nip.io)
+caffeinate -i pytest -m model  # + the real model (minutes; caffeinate keeps the Mac awake)
+caffeinate -i pytest -m ""     # everything
+```
+
+Model tests are skipped automatically if Ollama or the model isn't available.
+
+| File | Marker | Checks |
 |---|---|---|
-| `python -m scripts.test_downloader` | no (internet) | Downloads, SSRF, limits, TLS (24) |
-| `python -m scripts.test_pdf` | no | PDF → image conversion (11) |
-| `python -m scripts.test_grouping` | no | Group by owner (13) |
-| `python -m scripts.test_pipelines` | no | Pipeline base class, registry, extra pages only when needed (27) |
-| `python -m scripts.test_concurrency` | no | Concurrency limits, order, failure isolation, cancellation (25) |
-| `python -m scripts.test_security` | no | API keys, rate limiting, auth before validation (33) |
-| `python -m scripts.test_hardening` | no | 422 without input, 503, safe 500, readiness check, context-window guard (32) |
-| `python -m scripts.test_extraction --offline` | no | Formats and schemas (46) |
-| `python -m scripts.test_classifier` | yes | Name cross-check + classification of 9 samples + errors (28) |
-| `python -m scripts.test_extraction` | yes | + extraction on the samples (56) |
-| `python -m scripts.test_document_check` | yes (+ internet) | Full endpoint, 13 URLs (25) |
-| `python -m scripts.test_realistic [--dpi N]` | yes | Harder realistic documents, field by field (7 documents, 37 fields) |
-| `python -m scripts.benchmark_concurrency 1 2 3` | yes | Speed and accuracy per concurrency level |
+| `tests/test_url_safety.py` | (some `network`) | SSRF: private, loopback, link-local, metadata, IPv6 tricks, decimal IPs, schemes, credentials, DNS names to private IPs |
+| `tests/test_downloader.py` | `network` | Downloads, redirects re-checked, size and time limits, content allowlist, TLS, IP pinning |
+| `tests/test_pdf.py` | | PDF → images, page cap, pixel cap, passwords, broken files, images untouched |
+| `tests/test_schemas.py` | | Date, Aadhaar, amount and PAN formats; schema field names; registry covers every type |
+| `tests/test_grouping.py` | | Group by owner |
+| `tests/test_pipelines.py` | | Pipeline base class, registry, extra pages only when needed |
+| `tests/test_concurrency.py` | | Concurrency limits, model lock, order, failure isolation, cancellation |
+| `tests/test_hardening.py` | | 422 without input, 503, safe 500, readiness check, context-window guard |
+| `tests/test_security.py` | | API keys, rate limiting, auth before validation |
+| `tests/test_classifier.py` | (some `model`) | Name cross-check; classification of 9 samples; errors |
+| `tests/test_extraction.py` | `model` | Exact values extracted from 9 samples |
+| `tests/test_realistic.py` | `model` | 7 harder realistic documents, every field |
+| `tests/test_document_check.py` | `model` + `network` | The full endpoint with 13 URLs, and failure modes |
+
+Tools (not tests):
+
+| Command | What it does |
+|---|---|
+| `python -m scripts.check_ollama documents/sample_passport.png` | Quick manual check that the model answers |
+| `python -m scripts.evaluate_realistic [--dpi N] [--pages taxReturn=3 ...]` | Field-by-field report on the realistic documents, to compare DPI and page settings |
+| `python -m scripts.benchmark_concurrency 1 2 3` | Speed and accuracy per concurrency level, on fresh random documents |
 
 **Tuning another machine:**
 1. Check Ollama's log for `does not currently support parallel requests`.
@@ -304,3 +321,5 @@ These documents contain sensitive personal data. Only process documents you have
 - [x] 13. Realistic documents, extra pages only when needed, context-window guard, DPI re-check
 - [x] 14. PAN card type added through the registry (no API changes)
 - [x] 15. Optional API-key authentication and per-client rate limiting
+- [x] 16. Ollama upgraded to 0.34.4 and re-benchmarked
+- [x] 17. Tests converted to pytest
