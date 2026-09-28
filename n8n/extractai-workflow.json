@@ -103,7 +103,7 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "// One row per document. Aadhaar numbers are masked before anything leaves this machine.\nconst TYPES = { passport: 'Passport', idCard: 'Aadhaar', taxReturn: 'Tax return', panCard: 'PAN card', unknown: 'Unknown' };\nconst LABELS = { passportNumber: 'Passport no.', expiryDate: 'Expiry', address: 'Address', assessmentYear: 'Assessment year',\n  taxPayerName: 'Taxpayer', totalIncome: 'Total income', taxPaid: 'Tax paid', taxDue: 'Tax due', fatherName: 'Father' };\nconst mask = (n) => (typeof n === 'string' && /\\d{4}$/.test(n) ? `XXXX-XXXX-${n.slice(-4)}` : n);\nconst files = $('One item per file').all();\nconst processedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');\n\nconst rows = [];\n$input.all().forEach((item, i) => {\n  const file = files[i]?.json ?? {};\n  const base = { 'Processed at': processedAt, 'File': file.fileName ?? '', 'Owner': '', 'Type': '', 'Document name': '',\n    'ID number': '', 'Date of birth': '', 'Details': '', 'Error': '' };\n  // n8n splits a JSON array response into items: with one file per request, each item is one owner group.\n  if (!Array.isArray(item.json.documents)) {\n    // The HTTP node returned an error (for example 401, 429 or 503) instead of results.\n    const raw = String(item.json.error?.message ?? item.json.message ?? 'request failed');\n    // n8n reports e.g. 401 - \"{\\\"detail\\\":\\\"missing or invalid API key\\\"}\": keep the status and the API's detail.\n    const status = raw.match(/^(\\d{3})\\b/)?.[1];\n    const detail = raw.match(/detail\\\\?\"\\s*:\\s*\\\\?\"([^\"\\\\]+)/)?.[1];\n    const message = status ? `HTTP ${status}${detail ? `: ${detail}` : ''}` : raw;\n    rows.push({ ...base, Type: 'Unknown', Error: message.slice(0, 300) });\n    return;\n  }\n  for (const group of [item.json]) {\n    for (const doc of group.documents) {\n      const data = doc.data ?? {};\n      const id = data.passportNumber ?? mask(data.aadharNumber) ?? data.panNumber ?? '';\n      const details = Object.entries(data)\n        .filter(([k]) => !['passportNumber', 'aadharNumber', 'panNumber', 'dateOfBirth'].includes(k))\n        .map(([k, v]) => `${LABELS[k] ?? k}: ${v ?? 'not visible'}`).join('; ');\n      rows.push({ ...base, Owner: group.ownerName ?? '', Type: TYPES[doc.documentType] ?? doc.documentType,\n        'Document name': doc.documentName ?? '', 'ID number': id ?? '', 'Date of birth': data.dateOfBirth ?? '',\n        Details: details, Error: doc.error ?? '' });\n    }\n  }\n});\nreturn rows.map((json) => ({ json }));"
+        "jsCode": "// One row per document. Aadhaar numbers are masked before anything leaves this machine.\nconst TYPES = { passport: 'Passport', idCard: 'Aadhaar', taxReturn: 'Tax return', panCard: 'PAN card', unknown: 'Unknown' };\nconst LABELS = { passportNumber: 'Passport no.', expiryDate: 'Expiry', address: 'Address', assessmentYear: 'Assessment year',\n  taxPayerName: 'Taxpayer', totalIncome: 'Total income', taxPaid: 'Tax paid', taxDue: 'Tax due', fatherName: 'Father' };\nconst mask = (n) => (typeof n === 'string' && /\\d{4}$/.test(n) ? `XXXX-XXXX-${n.slice(-4)}` : n);\nconst files = $('One item per file').all();\nconst processedAt = $now.toFormat('yyyy-MM-dd HH:mm:ss'); // n8n's timezone (GENERIC_TIMEZONE)\n\nconst rows = [];\n$input.all().forEach((item, i) => {\n  const file = files[i]?.json ?? {};\n  const base = { 'Processed at': processedAt, 'File': file.fileName ?? '', 'Owner': '', 'Type': '', 'Document name': '',\n    'ID number': '', 'Date of birth': '', 'Details': '', 'Error': '' };\n  // n8n splits a JSON array response into items: with one file per request, each item is one owner group.\n  if (!Array.isArray(item.json.documents)) {\n    // The HTTP node returned an error (for example 401, 429 or 503) instead of results.\n    const raw = String(item.json.error?.message ?? item.json.message ?? 'request failed');\n    // n8n reports e.g. 401 - \"{\\\"detail\\\":\\\"missing or invalid API key\\\"}\": keep the status and the API's detail.\n    const status = raw.match(/^(\\d{3})\\b/)?.[1];\n    const detail = raw.match(/detail\\\\?\"\\s*:\\s*\\\\?\"([^\"\\\\]+)/)?.[1];\n    const message = status ? `HTTP ${status}${detail ? `: ${detail}` : ''}` : raw;\n    rows.push({ ...base, Type: 'Unknown', Error: message.slice(0, 300) });\n    return;\n  }\n  for (const group of [item.json]) {\n    for (const doc of group.documents) {\n      const data = doc.data ?? {};\n      const id = data.passportNumber ?? mask(data.aadharNumber) ?? data.panNumber ?? '';\n      const details = Object.entries(data)\n        .filter(([k]) => !['passportNumber', 'aadharNumber', 'panNumber', 'dateOfBirth'].includes(k))\n        .map(([k, v]) => `${LABELS[k] ?? k}: ${v ?? 'not visible'}`).join('; ');\n      rows.push({ ...base, Owner: group.ownerName ?? '', Type: TYPES[doc.documentType] ?? doc.documentType,\n        'Document name': doc.documentName ?? '', 'ID number': id ?? '', 'Date of birth': data.dateOfBirth ?? '',\n        Details: details, Error: doc.error ?? '' });\n    }\n  }\n});\nreturn rows.map((json) => ({ json }));"
       }
     },
     {
@@ -112,7 +112,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        960,
+        1440,
         0
       ],
       "parameters": {
@@ -126,7 +126,7 @@
       "type": "n8n-nodes-base.form",
       "typeVersion": 2.5,
       "position": [
-        1200,
+        1680,
         0
       ],
       "webhookId": "5b3f5c8e-6a0e-4f65-9d6a-extractai0002",
@@ -135,6 +135,168 @@
         "respondWith": "text",
         "completionTitle": "={{ $json.title }}",
         "completionMessage": "={{ $json.message }}"
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000005",
+      "name": "Google Sheets: append rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        960,
+        0
+      ],
+      "disabled": true,
+      "notes": "Off until connected: pick your 'Google Sheets OAuth2 API' credential and the 'ExtractAI results' sheet (row 1 = the column names), then enable this node. While disabled, rows pass straight through.",
+      "notesInFlow": true,
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000008",
+      "name": "Save to n8n table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ExtractAI results"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processedAt": "={{ $('Rows for Sheets').item.json['Processed at'] }}",
+            "file": "={{ $('Rows for Sheets').item.json['File'] }}",
+            "owner": "={{ $('Rows for Sheets').item.json['Owner'] }}",
+            "type": "={{ $('Rows for Sheets').item.json['Type'] }}",
+            "documentName": "={{ $('Rows for Sheets').item.json['Document name'] }}",
+            "idNumber": "={{ $('Rows for Sheets').item.json['ID number'] }}",
+            "dateOfBirth": "={{ $('Rows for Sheets').item.json['Date of birth'] }}",
+            "details": "={{ $('Rows for Sheets').item.json['Details'] }}",
+            "error": "={{ $('Rows for Sheets').item.json['Error'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "processedAt",
+              "displayName": "processedAt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "file",
+              "displayName": "file",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "owner",
+              "displayName": "owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "type",
+              "displayName": "type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "documentName",
+              "displayName": "documentName",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "idNumber",
+              "displayName": "idNumber",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "dateOfBirth",
+              "displayName": "dateOfBirth",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "details",
+              "displayName": "details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ]
+        },
+        "options": {}
       }
     }
   ],
@@ -176,7 +338,7 @@
       "main": [
         [
           {
-            "node": "Summary",
+            "node": "Google Sheets: append rows",
             "type": "main",
             "index": 0
           }
@@ -188,6 +350,28 @@
         [
           {
             "node": "Show result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets: append rows": {
+      "main": [
+        [
+          {
+            "node": "Save to n8n table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to n8n table": {
+      "main": [
+        [
+          {
+            "node": "Summary",
             "type": "main",
             "index": 0
           }

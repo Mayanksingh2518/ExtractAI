@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (Stage 20 in progress: waiting for Google credential)_
+_Last updated: 2026-09-28 (Stage 20 done; Google Sheets optional, needs the user's Google sign-in)_
 
 ---
 
@@ -603,7 +603,12 @@ Items are ticked only once they have been **built and tested**.
   - Passport with no visible name → row with blank owner and extracted data
   - A form submitted right after re-publishing hit "webhook is not registered" once; a second later it worked (n8n registers the form asynchronously)
   - All test executions deleted afterwards; no uploaded files left in n8n's storage
-- [ ] **Google Sheets node:** waiting for the user's Google credential (Google Cloud OAuth client + Sheets API), then add an *Append row* node between *Rows for Sheets* and *Summary*, test, and push
+- [x] **Storage without Google (user asked to finish it without them):** this session has no Google or browser tools, and connecting Google needs the user's own sign-in and consent. So:
+  - **n8n Data Table `ExtractAI results`** (created through `POST /rest/projects/:id/data-tables`; text columns `processedAt, file, owner, type, documentName, idNumber, dateOfBirth, details, error`) and a **Save to n8n table** node (Data Table 1.1, insert, table referenced **by name** so the JSON imports anywhere). Data stays on this machine; CSV download from the n8n UI
+  - **Google Sheets: append rows** node (4.7, OAuth2, append, auto-map by column name) added **disabled**, with a note on what to select. A disabled node passes items through, so the chain keeps working
+  - Order: Rows for Sheets → Google Sheets (off) → Save to n8n table → Summary. The table node reads from `$('Rows for Sheets')`, so it works whether Sheets is on or off
+  - **Tested:** passport + Aadhaar → result page *"JOHN DOE: Passport | MARIA DOE: Aadhaar"*, **2 rows in the n8n table** (Aadhaar `XXXX-XXXX-0123`), CSV download works. **Bug found and fixed:** "Processed at" was UTC (`new Date().toISOString()`); now `$now.toFormat(...)` in n8n's timezone (Asia/Kolkata), checked: 23:30 matched the clock. Test executions deleted; the 3 fake test rows were left in the table as examples
+- [ ] **Google Sheets (user):** create the Google Cloud OAuth client, add the credential in n8n, pick the sheet in the node and enable it (steps in README "n8n workflow"); then test one upload
 
 ---
 
@@ -660,7 +665,7 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: Stages 1–19 are done and pushed. Stage 20 (n8n) is built and tested except the Google Sheets node, which needs the user's Google credential.** The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
+**Status: Stages 1–20 are done and pushed.** The n8n workflow saves results to n8n's own table; the Google Sheets node is ready but switched off until the user connects their Google account. The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
 
 **To use it:** `source .venv/bin/activate && uvicorn app.main:app`, then open http://127.0.0.1:8000/ui/
 

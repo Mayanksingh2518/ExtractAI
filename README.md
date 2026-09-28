@@ -172,11 +172,12 @@ Plain HTML, CSS and JavaScript in `app/static/` (no framework, no build step), s
 
 ## n8n workflow
 
-`n8n/` holds a ready-made [n8n](https://n8n.io) automation: **an n8n form where someone uploads documents → ExtractAI extracts the data → one row per document in Google Sheets → a summary page for the person who uploaded**.
+`n8n/` holds a ready-made [n8n](https://n8n.io) automation: **an n8n form where someone uploads documents → ExtractAI extracts the data → one row per document in n8n's built-in table (and in Google Sheets once connected) → a summary page for the person who uploaded**.
 
 ```
 Upload documents (n8n Form) → One item per file (Code) → ExtractAI: extract data (HTTP, X-API-Key)
-  → Rows for Sheets (Code: Aadhaar masked) → Google Sheets (append) → Summary (Code) → Show result (Form ending)
+  → Rows for Sheets (Code: Aadhaar masked) → Google Sheets: append rows (off until connected)
+  → Save to n8n table (Data Table "ExtractAI results") → Summary (Code) → Show result (Form ending)
 ```
 
 **Run it locally:**
@@ -184,7 +185,9 @@ Upload documents (n8n Form) → One item per file (Code) → ExtractAI: extract 
 2. Start n8n: `docker compose -f n8n/docker-compose.yml up -d`, open http://localhost:5678 and create your account.
 3. **Workflows → Import from file →** `n8n/extractai-workflow.json`.
 4. Create a **Header Auth** credential named `ExtractAI API key` (name `X-API-Key`, value = one of your `API_KEYS`) and select it in the *ExtractAI: extract data* node.
-5. Connect Google Sheets (see below), publish the workflow, and open the form at http://localhost:5678/form/extractai
+5. In n8n, create a **Data table** named `ExtractAI results` with text columns `processedAt, file, owner, type, documentName, idNumber, dateOfBirth, details, error`.
+6. Publish the workflow and open the form at http://localhost:5678/form/extractai. Results land in the data table (download it as CSV from n8n at any time).
+7. **Optional, Google Sheets:** create a Google Cloud OAuth client (Sheets + Drive API, redirect URI `http://localhost:5678/rest/oauth2-credential/callback`), add a *Google Sheets OAuth2 API* credential in n8n, create a sheet whose row 1 holds the column names below, select both in the *Google Sheets: append rows* node and enable it.
 
 **How it's built:**
 - n8n runs in Docker, bound to `127.0.0.1`, and reaches the API on the Mac through `host.docker.internal`.
