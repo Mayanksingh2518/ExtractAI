@@ -304,22 +304,26 @@ Tools (not tests):
 
 These documents contain sensitive personal data. Only process documents you have the right to process, and use made-up documents for testing. The `documents/` folder and `.env` are gitignored.
 
-## Roadmap
+## Build stages
 
-- [x] 1. Project skeleton, venv, FastAPI `/` endpoint
-- [x] 2. Ollama setup and `app/services/ollama.py`
-- [x] 3. `POST /document-check` with 10–50 URL validation
-- [x] 4. Safe document downloading (SSRF, limits, allowlist)
-- [x] 5. PDF to image conversion
-- [x] 6. Classification with the vision model
-- [x] 7. Group by owner
-- [x] 8. Pipeline architecture (base class + registry)
-- [x] 9. Passport, Aadhaar and tax return pipelines
-- [x] 10. Connect everything and return the final JSON
-- [x] 11. Controlled concurrency + benchmark (+ shared-prompt speed-up)
-- [x] 12. Hardening: 422 without the submitted input, 503 when the model is down, safe 500s, logging checks
-- [x] 13. Realistic documents, extra pages only when needed, context-window guard, DPI re-check
-- [x] 14. PAN card type added through the registry (no API changes)
-- [x] 15. Optional API-key authentication and per-client rate limiting
-- [x] 16. Ollama upgraded to 0.34.4 and re-benchmarked
-- [x] 17. Tests converted to pytest
+The project was built one tested stage at a time. Stages 1–12 cover the original brief; 13–17 were follow-up improvements. Tests use fake documents only.
+
+| # | Stage | What was built | Tested / key finding |
+|---|---|---|---|
+| 1 | Project skeleton | Folder layout (`app/api`, `schemas`, `services`, `pipelines`, `utils`), `requirements.txt`, `.env.example`, FastAPI app with `GET /` | All packages import; `GET /` returns `{"status":"ok"}`; `/docs` loads |
+| 2 | Ollama service | `OllamaClient.generate_structured()` calls `/api/chat` with httpx: JSON-schema `format`, `think: false`, `temperature: 0`, `num_ctx`, Pydantic validation. Settings from `.env` | Passport classified correctly. `qwen3-vl:8b-instruct` is about 3× faster than `qwen3-vl:8b`. Ollama's default 4096-token context can cut off images silently, so `num_ctx` is 8192 |
+| 3 | Request validation | `POST /document-check` accepts 10–50 `http(s)` URLs, no extra fields | 9 URLs, 51 URLs, bad URLs, `ftp://`, missing or extra fields all rejected with 422 |
+| 4 | Safe downloading | SSRF protection (every resolved IP must be public, re-checked on each redirect, connects to the checked IP), size and time limits, content-type + file-signature allowlist, private temp folder per request | 22 SSRF cases and 24 download cases, including redirects to `127.0.0.1` and cloud metadata, expired TLS, oversized and slow downloads |
+| 5 | PDF to images | PyMuPDF renders PDF pages to PNG; PNG/JPEG pass through untouched; page count and pixel caps | 11 cases incl. password-protected, truncated and huge-page PDFs. 100 DPI chosen: accurate and about 3× faster than 150 |
+| 6 | Classification | `documentType`, `documentName`, `ownerName`; the model must not guess. Field order puts the document name first, and a name cross-check overrules wrong types | A PAN card and a driving licence were first mistaken for Aadhaar; fixed. 22/22 on two runs |
+| 7 | Group by owner | `group_by_owner()` with a case- and space-insensitive key; no fuzzy matching; documents without an owner grouped last | 13 cases: "John Doe" = "JOHN DOE", but "Jon Doe" stays separate |
+| 8 | Pipeline architecture | `BaseDocumentPipeline` + `PipelineRegistry`: a new document type needs no API changes. Types without a pipeline return `data: null` | 20 cases with fake pipelines, incl. adding a new type |
+| 9 | Passport, Aadhaar, tax return | Three pipelines. The model copies values as printed; code converts dates to ISO, Aadhaar to `1234-5678-9012`, amounts to plain digits | All values exact; a missing address comes back `null`, and a page without totals gives all `null` (no guessing) |
+| 10 | End to end | Download → pages → classify → extract → group. One bad document never fails the batch; each document has `sourceIndex` and `error` | 13-URL request with fakes, SSRF-blocked, 404 and broken files. Tokens in URLs never reach the logs |
+| 11 | Concurrency | `MAX_CONCURRENT_DOCUMENTS` semaphore shared by all requests, plus a model lock. One shared system prompt lets Ollama reuse the image work between the classify and extract calls | Extraction 9 s → 3 s; **about 14.5 s per document**. Ollama can't run qwen3-vl in parallel |
+| 12 | Hardening | 422 without echoing the submitted values, 503 when the model is down (checked before any download), safe 500s, logging rules | 27 cases; secrets never appear in responses or logs |
+| 13 | Realistic documents | Harder fake documents (small print, phone photo, sideways scan, card on A4, 5-page ITR). Extraction reads extra pages only when page 1 leaves fields empty. Context-window guard | 28/32 → **32/32 fields**. Found that Ollama silently cuts oversized input; now reported as an error. 150 DPI: same accuracy, 2× slower |
+| 14 | PAN card | New `panCard` type (`panNumber`, `dateOfBirth`, `fatherName`) added only through the registry | Both PAN samples exact; **0 lines changed** in the API code |
+| 15 | Auth and rate limiting | Optional `X-API-Key` (constant-time check, never logged); sliding-window rate limit per key or IP with `429` + `Retry-After` | 33 cases plus a real server: 401, 200, 200, 429; the key appeared 0 times in the log |
+| 16 | Ollama upgrade | Ollama 0.14.1 → 0.34.4 | qwen3-vl still can't run in parallel; memory 7.4 → 5.9 GB. Benchmark about 200 s vs 145 s, measured on battery after a day of load, so the cause isn't isolated yet |
+| 17 | pytest | Old test scripts converted to `tests/` (pytest is dev-only); `model` and `network` markers | `pytest`: 177 offline tests in 16 s. `pytest -m ""`: **251 passed**. Deliberately broken code made the tests fail |
