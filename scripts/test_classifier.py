@@ -26,7 +26,8 @@ CASES = [
     ("sample_aadhaar.png", DocumentType.AADHAAR, "MARIA DOE"),
     ("sample_tax_return.pdf", DocumentType.TAX_RETURN, "JOHN DOE"),
     ("sample_driving_licence.png", DocumentType.UNKNOWN, ANY),  # other ID type -> unknown
-    ("sample_pan_card.png", DocumentType.UNKNOWN, ANY),  # Indian ID, but not Aadhaar -> unknown
+    ("sample_pan_card.png", DocumentType.PAN_CARD, "SARA LEE"),  # Stage 14: its own type
+    ("realistic_pan_card.png", DocumentType.PAN_CARD, "KAVITA NAIR"),  # bilingual, father's name decoy
     ("sample_receipt.png", DocumentType.UNKNOWN, None),  # not an identity document, no owner
     ("sample_passport_no_name.png", DocumentType.PASSPORT, None),  # name fields blank -> null
 ]
@@ -36,11 +37,16 @@ CROSS_CHECKS = [
     ("Aadhaar card", DocumentType.AADHAAR, DocumentType.AADHAAR),
     ("AADHAR", DocumentType.AADHAAR, DocumentType.AADHAAR),
     ("UIDAI e-Aadhaar letter", DocumentType.AADHAAR, DocumentType.AADHAAR),
-    ("Permanent Account Number Card", DocumentType.AADHAAR, DocumentType.UNKNOWN),
+    ("Permanent Account Number Card", DocumentType.AADHAAR, DocumentType.PAN_CARD),  # named PAN -> panCard
     ("Voter ID card", DocumentType.AADHAAR, DocumentType.UNKNOWN),
     (None, DocumentType.AADHAAR, DocumentType.UNKNOWN),  # can't confirm Aadhaar -> don't guess
-    ("PAN card", DocumentType.TAX_RETURN, DocumentType.UNKNOWN),
-    ("Permanent Account Number Card", DocumentType.TAX_RETURN, DocumentType.UNKNOWN),
+    ("PAN card", DocumentType.TAX_RETURN, DocumentType.PAN_CARD),
+    ("Permanent Account Number Card", DocumentType.TAX_RETURN, DocumentType.PAN_CARD),
+    ("e-PAN", DocumentType.AADHAAR, DocumentType.PAN_CARD),
+    ("Income Tax PAN Card", DocumentType.PAN_CARD, DocumentType.PAN_CARD),
+    ("Driving Licence", DocumentType.PAN_CARD, DocumentType.UNKNOWN),  # panCard needs a PAN name
+    (None, DocumentType.PAN_CARD, DocumentType.UNKNOWN),
+    ("Japan passport", DocumentType.PASSPORT, DocumentType.PASSPORT),  # 'pan' inside a word is no marker
     ("ITR-V Acknowledgement", DocumentType.TAX_RETURN, DocumentType.TAX_RETURN),
     ("2025 Income tax return", DocumentType.TAX_RETURN, DocumentType.TAX_RETURN),
     ("Travel Document", DocumentType.PASSPORT, DocumentType.PASSPORT),  # passports are not checked

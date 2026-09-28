@@ -134,6 +134,30 @@ def aadhaar_card(side: str, a: dict) -> Image.Image:
     return img
 
 
+def pan_card(p: dict) -> Image.Image:
+    """A bilingual PAN card, 1012x638 like a 300 dpi scan. The father's name and the signature are decoys."""
+    img = Image.new("RGB", (1012, 638), (214, 233, 244))
+    draw = ImageDraw.Draw(img)
+    hindi, label, value = _font("Arial Unicode.ttf", 22), _font("Arial Unicode.ttf", 20), _font("Arial Bold.ttf", 30)
+    draw.text((40, 20), "आयकर विभाग", font=hindi, fill="black")
+    draw.text((40, 50), "INCOME TAX DEPARTMENT", font=_font("Arial Bold.ttf", 26), fill="black")
+    draw.text((640, 20), "भारत सरकार", font=hindi, fill="black")
+    draw.text((640, 50), "GOVT. OF INDIA", font=_font("Arial Bold.ttf", 26), fill="black")
+    draw.text((260, 105), "स्थायी लेखा संख्या कार्ड", font=hindi, fill="black")
+    draw.text((200, 135), "Permanent Account Number Card", font=_font("Arial Bold.ttf", 28), fill="black")
+    draw.text((330, 180), p["pan"], font=_font("Arial Bold.ttf", 40), fill="black")
+    draw.rectangle([40, 240, 220, 450], fill=(190, 200, 210))
+    for i, (hi, en, text) in enumerate([("नाम", "Name", p["name"]), ("पिता का नाम", "Father's Name", p["father"]),
+                                          ("जन्म की तारीख", "Date of Birth", p["dob"])]):
+        draw.text((260, 240 + i * 80), f"{hi} / {en}", font=label, fill="dimgray")
+        draw.text((260, 268 + i * 80), text, font=value, fill="black")
+    draw.text((260, 500), p["name"].split()[0].title() + " " + p["name"].split()[1][0] + ".",
+              font=_font("Times New Roman Italic.ttf", 34), fill="navy")  # signature
+    draw.text((260, 540), "हस्ताक्षर / Signature", font=label, fill="dimgray")
+    draw.text((640, 590), SPECIMEN, font=_font("Arial.ttf", 16), fill="firebrick")
+    return img
+
+
 def card_on_a4_scan(card: Image.Image, angle: float) -> Image.Image:
     """A card scanned on a flatbed at 200 dpi: a small, slightly tilted card near the top of an A4 page."""
     page = Image.new("RGB", (1654, 2339), (250, 250, 247))
@@ -287,6 +311,7 @@ E_AADHAAR = {"name": "Neha Kapoor", "dob": "14/06/1988", "gender": "FEMALE", "nu
 AADHAAR_CARD = {"name": "Vikram Singh", "dob": "05/12/1995", "gender": "MALE", "number": "6130 2297 4485",
                 "vid": "9876 1234 5566 7788",
                 "address_lines": ["S/O: Harpal Singh, House No. 482,", "Sector 21-C, Chandigarh,", "Chandigarh - 160022"]}
+PAN = {"pan": "BQTPK7302M", "name": "KAVITA NAIR", "father": "MOHAN NAIR", "dob": "19/04/1993"}
 ITR = {"ay": "2024-25", "pan": "AKRPM4821Q", "name": "ARJUN MEHTA", "dob": "22/09/1986",
        "address": "B-204, Green Park Society, Kothrud, Pune, Maharashtra 411038"}
 
@@ -303,5 +328,6 @@ if __name__ == "__main__":
               [card_on_a4_scan(aadhaar_card("front", AADHAAR_CARD), 1.5),
                card_on_a4_scan(aadhaar_card("back", AADHAAR_CARD), -1.0)])
     full_itr(OUTPUT_DIR / "realistic_itr_full.pdf", ITR)
+    pan_card(PAN).save(OUTPUT_DIR / "realistic_pan_card.png")
     for path in sorted(OUTPUT_DIR.glob("realistic_*")):
         print(f"saved {path}")

@@ -14,9 +14,9 @@ from app.config import get_settings
 from app.pipelines.base import ExtractionError
 from app.pipelines.registry import PipelineRegistry
 from app.schemas.classification import DocumentType
-from app.schemas.extraction import AadhaarData, PassportData, TaxReturnData
+from app.schemas.extraction import AadhaarData, PanCardData, PassportData, TaxReturnData
 from app.services.ollama import OllamaClient
-from app.utils.normalize import to_aadhaar_number, to_amount, to_iso_date
+from app.utils.normalize import to_aadhaar_number, to_amount, to_iso_date, to_pan
 from app.utils.pdf import to_page_images
 from app.utils.workspace import request_workspace
 
@@ -53,6 +53,15 @@ def part_a() -> None:
     ]:
         check(f"amount {raw!r} -> {want!r}", to_amount(raw) == want, repr(to_amount(raw)))
 
+    for raw, want in [
+        ("ABCDE1234F", "ABCDE1234F"), ("abcde1234f", "ABCDE1234F"), ("ABCDE 1234 F", "ABCDE1234F"),
+        ("ABCD1234F", "ABCD1234F"),  # 9 characters: kept as printed
+        ("null", None), (None, None),
+    ]:
+        check(f"pan {raw!r} -> {want!r}", to_pan(raw) == want, repr(to_pan(raw)))
+    c = PanCardData(panNumber="fghij 5678 k", dateOfBirth="05/08/1988", fatherName=" PETER  LEE ")
+    check("PanCardData normalises", c.model_dump() == {"panNumber": "FGHIJ5678K", "dateOfBirth": "1988-08-05", "fatherName": "PETER LEE"})
+
     p = PassportData(passportNumber="ab 1234567", dateOfBirth="15 MAY 1985", expiryDate="null")
     check("PassportData normalises", p.model_dump() == {"passportNumber": "AB1234567", "dateOfBirth": "1985-05-15", "expiryDate": None})
     a = AadhaarData(aadharNumber="2345 6789 0123", dateOfBirth="01/01/1990", address="  123,  Main St ")
@@ -66,7 +75,7 @@ def part_a() -> None:
     check("model is asked for an integer year", {"type": "integer"} in schema.get("anyOf", []), str(schema.get("anyOf")))
 
     registry = PipelineRegistry.build(None)  # type: ignore[arg-type]  # no calls made in Part A
-    check("registry has the 3 pipelines", registry.types == ["passport", "idCard", "taxReturn"], str(registry.types))
+    check("registry has the 4 pipelines", registry.types == ["passport", "idCard", "taxReturn", "panCard"], str(registry.types))
     check("every pipeline key is a real DocumentType", all(t in {d.value for d in DocumentType} for t in registry.types))
     check("'unknown' still has no pipeline", registry.get(DocumentType.UNKNOWN) is None)
 
@@ -87,6 +96,10 @@ CASES = [
      {"assessmentYear": 2025, "taxPayerName": "JOHN DOE", "totalIncome": "500000", "taxPaid": "50000", "taxDue": "450000"}),
     ("sample_tax_return.pdf", DocumentType.TAX_RETURN, slice(1, 2),  # page 2 only: salary schedule, no totals
      {"assessmentYear": None, "taxPayerName": None, "totalIncome": None, "taxPaid": None, "taxDue": None}),
+    ("sample_pan_card.png", DocumentType.PAN_CARD, None,
+     {"panNumber": "FGHIJ5678K", "dateOfBirth": "1988-08-05", "fatherName": "PETER LEE"}),
+    ("realistic_pan_card.png", DocumentType.PAN_CARD, None,
+     {"panNumber": "BQTPK7302M", "dateOfBirth": "1993-04-19", "fatherName": "MOHAN NAIR"}),
 ]
 
 

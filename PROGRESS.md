@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (Stage 13 done; Stages 14-17 in progress)_
+_Last updated: 2026-09-28 (Stages 13-14 done; 15-17 in progress)_
 
 ---
 
@@ -480,6 +480,23 @@ Items are ticked only once they have been **built and tested**.
 - [x] Offline tests: `test_pipelines` **27/27** (7 new: 2nd call only when a field is null and more pages exist; pages 1–3 sent; missing field filled, page-1 value kept; null everywhere stays null; 2 pages → 2 sent; one-page document or `max_pages=1` → no 2nd call; 2nd call failing → `ExtractionError`). `test_hardening` **32/32** (5 new context-guard checks: half of num_ctx and num_ctx − 257 → answer; num_ctx − 99 and num_ctx → `OllamaError`; no count reported → answer). `test_extraction --offline` 39/39
 - [x] Regression with the model: `test_extraction` **47/47** (the 3-page ITR-V sample still takes one call: everything is on page 1; the Aadhaar front with no address is a single image, so no 2nd call), `test_classifier` **22/22**, `test_document_check` **25/25**
 
+### Stage 14: PAN card type through the registry ✅
+- [x] **Files changed** (and nothing in `app/api/`, `app/main.py` or `app/services/document_processor.py`: `git diff` on them is 0 lines):
+  - `app/schemas/classification.py`: `DocumentType.PAN_CARD = "panCard"`
+  - `app/services/classifier.py`: prompt option `panCard` (PAN is an ID card, NOT a tax return), and PAN removed from the `unknown` examples. `check_type_against_name` now: named PAN ("permanent account number", "pan card", "e-pan") but typed `idCard`/`taxReturn` → `panCard`; `idCard` without an Aadhaar name → `unknown`; `panCard` without a PAN name → `unknown`
+  - `app/utils/normalize.py`: `to_pan` (uppercase, no spaces, must be 5 letters + 4 digits + 1 letter, otherwise kept as printed)
+  - `app/schemas/extraction.py`: `PanCardData {panNumber, dateOfBirth, fatherName}`
+  - `app/pipelines/pan_card.py`: `PanCardPipeline` (`max_pages` 1), added to `PIPELINE_CLASSES`
+  - **Decision:** `fatherName` is extracted, because it is the one other field every PAN card prints; the holder's name is already `ownerName`
+- [x] New FAKE sample `realistic_pan_card.png` (bilingual, KAVITA NAIR, BQTPK7302M, father MOHAN NAIR, DOB 19/04/1993, signature decoy)
+- [x] **Tests:**
+  - `test_extraction --offline` **46/46** (6 `to_pan` cases incl. 9 characters kept as printed; `PanCardData` normalises; registry has 4 pipelines)
+  - `test_classifier` **28/28**: 18 cross-checks (PAN named as `idCard`/`taxReturn` → `panCard`; "e-PAN" → `panCard`; `panCard` named "Driving Licence" or `null` → `unknown`), and 9 model cases: `sample_pan_card` → panCard / SARA LEE, `realistic_pan_card` → panCard / KAVITA NAIR; driving licence still `unknown`
+  - `test_extraction` **56/56**: both PAN cards exact (`FGHIJ5678K`, `1988-08-05`, `PETER LEE`; `BQTPK7302M`, `1993-04-19`, `MOHAN NAIR`, so the father's name was not confused with the holder's)
+  - `test_realistic` **7/7 documents, 37/37 fields**
+  - `test_document_check` **25/25**: the PAN card in the 13-URL request is now `panCard` with data, in the "Sara Lee" group; everything else unchanged
+  - `test_pipelines` 27/27
+
 ---
 
 ## 6. File map (what exists now)
@@ -504,11 +521,12 @@ scripts/test_grouping.py       13 offline grouping checks
 app/pipelines/base.py          BaseDocumentPipeline(ABC): extract(page_images), _generate helper, ExtractionError
 app/pipelines/registry.py      PipelineRegistry (get / extract / build) + PIPELINE_CLASSES
 scripts/test_pipelines.py      27 offline pipeline/registry checks (incl. page 1 first, more pages only when needed)
-app/utils/normalize.py         clean_text, to_iso_date, to_aadhaar_number, to_amount
-app/schemas/extraction.py      PassportData, AadhaarData (aadharNumber), TaxReturnData (assessmentYear)
+app/utils/normalize.py         clean_text, to_iso_date, to_aadhaar_number, to_amount, to_pan
+app/schemas/extraction.py      PassportData, AadhaarData (aadharNumber), TaxReturnData (assessmentYear), PanCardData
 app/pipelines/passport.py      PassportPipeline      (document_type "passport")
 app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard", max_pages 2)
 app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 3)
+app/pipelines/pan_card.py      PanCardPipeline       (document_type "panCard") - Stage 14
 scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
 app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
 app/services/document_processor.py   DocumentProcessor.process(urls): readiness check, documents concurrently (outer semaphore + model lock), then group
@@ -531,12 +549,12 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: Stages 1–13 are done, tested and pushed.** The user asked (2026-09-28) to do all 5 optional next steps, as Stages 13–17, one at a time, each tested, recorded here and pushed:
+**Status: Stages 1–14 are done, tested and pushed.** The user asked (2026-09-28) to do all 5 optional next steps, as Stages 13–17, one at a time, each tested, recorded here and pushed:
 
 - [x] **Stage 13:** realistic documents, multi-page extraction, DPI re-check (done)
-- [ ] **Stage 14:** add a new document type through the registry: **PAN card** (`panCard`), showing that `app/api/` and `document_processor.py` don't change
+- [x] **Stage 14:** PAN card (`panCard`) added through the registry, with no API changes (done)
 - [ ] **Stage 15:** optional API-key authentication and rate limiting (no new packages)
 - [ ] **Stage 16:** `brew upgrade ollama`, then check whether qwen3-vl now runs in parallel, and re-run `benchmark_concurrency`
 - [ ] **Stage 17:** convert the `scripts/test_*.py` checks to pytest. **The user approved the extra package** by asking for all 5 steps; keep it in a separate dev-only requirements file so the runtime stack stays unchanged
 
-**Next action:** Stage 14.
+**Next action:** Stage 15.

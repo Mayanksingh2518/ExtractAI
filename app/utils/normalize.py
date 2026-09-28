@@ -19,6 +19,7 @@ DATE_FORMATS = (
 AADHAAR_RE = re.compile(r"^([0-9X]{4})[ -]?([0-9X]{4})[ -]?(\d{4})$")  # X for masked Aadhaar
 CURRENCY_RE = re.compile(r"(₹|rs\.?|inr|/-)", re.IGNORECASE)
 AMOUNT_RE = re.compile(r"^\d+(\.\d+)?$")
+PAN_RE = re.compile(r"^[A-Z]{5}\d{4}[A-Z]$")
 
 
 def clean_text(value: str | None) -> str | None:
@@ -61,3 +62,12 @@ def to_amount(value: str | None) -> str | None:
         return text
     whole, _, fraction = digits.partition(".")
     return whole if not fraction.strip("0") else digits
+
+
+def to_pan(value: str | None) -> str | None:
+    """'abcde 1234 f' -> 'ABCDE1234F'. Anything that isn't 5 letters, 4 digits, 1 letter is kept as printed."""
+    text = clean_text(value)
+    if text is None:
+        return None
+    compact = text.replace(" ", "").upper()
+    return compact if PAN_RE.match(compact) else text

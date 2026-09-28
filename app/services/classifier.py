@@ -17,18 +17,18 @@ documentType - choose exactly one:
   "idCard" does NOT mean "any ID card".
 - "taxReturn": an income tax RETURN FILING or its acknowledgement (ITR / ITR-V): it reports an assessment
   year and income/tax figures such as total income, tax paid, tax payable.
+- "panCard": an Indian PAN card (Permanent Account Number card, or e-PAN) issued by the Income Tax
+  Department, with a 10-character PAN like ABCDE1234F. It is an ID card, NOT a tax return.
 - "unknown": anything else. This includes every other kind of ID card - driving licence, voter ID,
-  employee or student ID, and the PAN card (Permanent Account Number card): a PAN card is an ID card,
-  NOT a tax return, even though it is issued by the Income Tax Department - as well as receipts,
-  letters, photos, or if you are not sure.
+  employee or student ID - as well as receipts, letters, photos, or if you are not sure.
 
 ownerName: ONLY the full name of the person the document belongs to (passport holder, Aadhaar holder,
-taxpayer), given names then surname. Do not include labels, numbers, dates, relatives' names
+taxpayer, PAN card holder), given names then surname. Do not include labels, numbers, dates, relatives' names
 (S/O, D/O, W/O, father's name) or the issuing authority. null if no holder name is visible."""
 
 
 AADHAAR_MARKERS = ("aadhaar", "aadhar", "uidai")
-PAN_MARKERS = ("permanent account number", "pan card")
+PAN_MARKERS = ("permanent account number", "pan card", "e-pan")
 
 
 class ClassificationError(Exception):
@@ -36,17 +36,25 @@ class ClassificationError(Exception):
 
 
 def check_type_against_name(result: Classification) -> Classification:
-    """Downgrade the model's documentType to unknown when its own documentName contradicts it.
+    """Correct the model's documentType when its own documentName contradicts it.
 
     The model names documents reliably ("Permanent Account Number Card") but reads the
-    idCard enum as "any ID card", so the name is used as a cross-check.
+    idCard enum as "any ID card", so the name is used as a cross-check:
+    - a PAN card named as such but typed idCard or taxReturn -> panCard
+    - idCard without an Aadhaar name, or panCard without a PAN name -> unknown (can't confirm)
     """
     name = (result.documentName or "").casefold()
-    wrong_id_card = result.documentType is DocumentType.AADHAAR and not any(m in name for m in AADHAAR_MARKERS)
-    pan_as_tax_return = result.documentType is DocumentType.TAX_RETURN and any(m in name for m in PAN_MARKERS)
-    if wrong_id_card or pan_as_tax_return:
-        return result.model_copy(update={"documentType": DocumentType.UNKNOWN})
-    return result
+    doc_type = result.documentType
+    named_pan = any(m in name for m in PAN_MARKERS)
+    if named_pan and doc_type in (DocumentType.AADHAAR, DocumentType.TAX_RETURN):
+        doc_type = DocumentType.PAN_CARD
+    elif doc_type is DocumentType.AADHAAR and not any(m in name for m in AADHAAR_MARKERS):
+        doc_type = DocumentType.UNKNOWN
+    elif doc_type is DocumentType.PAN_CARD and not named_pan:
+        doc_type = DocumentType.UNKNOWN
+    if doc_type is result.documentType:
+        return result
+    return result.model_copy(update={"documentType": doc_type})
 
 
 class DocumentClassifier:

@@ -43,6 +43,8 @@ CASES = [
     ("realistic_itr_full.pdf", DocumentType.TAX_RETURN, "ARJUN MEHTA",  # totals on pages 2-3
      {"assessmentYear": 2024, "taxPayerName": "ARJUN MEHTA", "totalIncome": "1023500", "taxPaid": "110000",
       "taxDue": "15570"}),
+    ("realistic_pan_card.png", DocumentType.PAN_CARD, "KAVITA NAIR",  # Stage 14
+     {"panNumber": "BQTPK7302M", "dateOfBirth": "1993-04-19", "fatherName": "MOHAN NAIR"}),
 ]
 
 

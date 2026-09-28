@@ -81,7 +81,8 @@ Problems with individual documents are **not** request errors: the request retur
 | `passport` | Passport data page | `passportNumber`, `dateOfBirth`, `expiryDate` |
 | `idCard` | **Indian Aadhaar only** (card or letter) | `aadharNumber` (spelled this way on purpose), `dateOfBirth`, `address` |
 | `taxReturn` | Income tax return or its acknowledgement (ITR / ITR-V) | `assessmentYear` (integer), `taxPayerName`, `totalIncome`, `taxPaid`, `taxDue` |
-| `unknown` | Everything else: driving licence, PAN card, voter ID, receipts, letters… | `data` is `null` |
+| `panCard` | Indian PAN card (Permanent Account Number card, e-PAN) | `panNumber` (e.g. `ABCDE1234F`), `dateOfBirth`, `fatherName` |
+| `unknown` | Everything else: driving licence, voter ID, receipts, letters… | `data` is `null` |
 
 ### Response rules
 
@@ -89,6 +90,7 @@ Problems with individual documents are **not** request errors: the request retur
 - **Formats:** the model copies each value as printed, and the code converts it.
   - Dates become `YYYY-MM-DD`. **Only day-first dates are understood** (`15 MAY 1985`, `01/01/1990`, `23-11-1975`, `05.08.1988`); US month-first dates are not supported.
   - Aadhaar numbers become `1234-5678-9012`, and masked ones `XXXX-XXXX-0123`.
+  - PAN numbers are uppercased without spaces (`ABCDE1234F`); anything else is kept as printed.
   - Amounts become plain digit strings: `₹ 5,00,000/-` → `"500000"`. `.00` is dropped; other decimals are kept.
   - `assessmentYear` is the first year of the assessment year: `2025-26` → `2025`.
   - A value in an unexpected format is **returned as printed**, never guessed or dropped. An impossible date like `31/02/1990` stays `"31/02/1990"`.
@@ -104,7 +106,7 @@ Problems with individual documents are **not** request errors: the request retur
   - If only extraction fails, its type, name and owner are kept, with `data: null` and an `error`.
   - Error messages name the host only, never the full URL.
   - The request returns `200` even if every document failed. The one exception is when the model itself is unavailable, which gives `503`.
-- **Classification cross-check:** the model sometimes labels any ID card as `idCard`, so the code overrides it. `idCard` becomes `unknown` unless the document's name mentions Aadhaar / UIDAI, and a PAN card labelled `taxReturn` becomes `unknown`.
+- **Classification cross-check:** the model sometimes labels any ID card as `idCard`, so the code overrides it. A document named as a PAN card ("Permanent Account Number", "PAN card", "e-PAN") but labelled `idCard` or `taxReturn` becomes `panCard`; otherwise `idCard` becomes `unknown` unless the name mentions Aadhaar / UIDAI, and `panCard` becomes `unknown` unless the name mentions PAN.
 
 ---
 
@@ -123,7 +125,7 @@ POST /document-check
 ```
 
 - **Pipelines** live in `app/pipelines/`. Each one subclasses `BaseDocumentPipeline` and sets `document_type`, a prompt, a Pydantic schema and `max_pages`.
-- **To add a new type** (bank statement, driving licence, payslip…): write a pipeline and add it to `PIPELINE_CLASSES` in `app/pipelines/registry.py`. **The API code doesn't change.** For the classifier to detect the type, also add it to the `DocumentType` enum and the classifier prompt.
+- **To add a new type** (bank statement, driving licence, payslip…): write a pipeline and add it to `PIPELINE_CLASSES` in `app/pipelines/registry.py`. **The API code doesn't change.** For the classifier to detect the type, also add it to the `DocumentType` enum and the classifier prompt. `panCard` (Stage 14) was added this way: an enum value, a prompt line, a cross-check rule, a schema and `app/pipelines/pan_card.py`, with no change to `app/api/`, `app/main.py` or `document_processor.py`.
 - **Ollama** is called directly through its REST API (`/api/chat`) with httpx, with `think: false`, a JSON-schema `format`, `temperature: 0` and `num_ctx`. Only `app/services/ollama.py` knows about Ollama. Every model answer is validated with Pydantic.
 - **Shared system prompt:** classification and extraction use the same system prompt, and a document's two model calls always reach Ollama back to back. Ollama can then reuse the work it did on the image in the second call, which cuts the extraction call from about 9 s to about 3 s, and a whole document by about a third. Keep the system prompt shared (`app/services/prompts.py`).
 
@@ -171,7 +173,7 @@ POST /document-check
 
 ### Known limitations
 
-- Only passports, Aadhaar and tax returns are extracted; everything else is `unknown`.
+- Only passports, Aadhaar, tax returns and PAN cards are extracted; everything else is `unknown`.
 - Only day-first dates are understood.
 - There's no fuzzy name matching, so OCR-level spelling differences create separate owner groups.
 - Accuracy has been measured only on the generated **fake** sample documents, not on real-world scans.
@@ -254,11 +256,11 @@ Every test uses **fake** documents made by `python -m scripts.make_sample_docume
 | `python -m scripts.test_pipelines` | no | Pipeline base class, registry, extra pages only when needed (27) |
 | `python -m scripts.test_concurrency` | no | Concurrency limits, order, failure isolation, cancellation (25) |
 | `python -m scripts.test_hardening` | no | 422 without input, 503, safe 500, readiness check, context-window guard (32) |
-| `python -m scripts.test_extraction --offline` | no | Formats and schemas (39) |
-| `python -m scripts.test_classifier` | yes | Classification of 8 samples + errors (22) |
-| `python -m scripts.test_extraction` | yes | + extraction on the samples (47) |
+| `python -m scripts.test_extraction --offline` | no | Formats and schemas (46) |
+| `python -m scripts.test_classifier` | yes | Name cross-check + classification of 9 samples + errors (28) |
+| `python -m scripts.test_extraction` | yes | + extraction on the samples (56) |
 | `python -m scripts.test_document_check` | yes (+ internet) | Full endpoint, 13 URLs (25) |
-| `python -m scripts.test_realistic [--dpi N]` | yes | Harder realistic documents, field by field (6 documents, 32 fields) |
+| `python -m scripts.test_realistic [--dpi N]` | yes | Harder realistic documents, field by field (7 documents, 37 fields) |
 | `python -m scripts.benchmark_concurrency 1 2 3` | yes | Speed and accuracy per concurrency level |
 
 **Tuning another machine:**
@@ -285,3 +287,5 @@ These documents contain sensitive personal data. Only process documents you have
 - [x] 10. Connect everything and return the final JSON
 - [x] 11. Controlled concurrency + benchmark (+ shared-prompt speed-up)
 - [x] 12. Hardening: 422 without the submitted input, 503 when the model is down, safe 500s, logging checks
+- [x] 13. Realistic documents, extra pages only when needed, context-window guard, DPI re-check
+- [x] 14. PAN card type added through the registry (no API changes)

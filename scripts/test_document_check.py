@@ -99,7 +99,7 @@ async def main_request(processor: DocumentProcessor) -> None:
         sample("sample_passport_scan.pdf"),     # 4  John Doe
         sample("sample_aadhaar_front.png"),     # 5  RAVI SHARMA, address null
         sample("sample_driving_licence.png"),   # 6  unknown, but has an owner
-        sample("sample_pan_card.png"),          # 7  unknown, but has an owner
+        sample("sample_pan_card.png"),          # 7  panCard (Stage 14)
         sample("sample_passport_no_name.png"),  # 8  passport, no owner
         "http://127.0.0.1:11434/api/tags",      # 9  real downloader: SSRF blocked
         sample("missing.pdf"),                  # 10 404
@@ -144,7 +144,7 @@ async def main_request(processor: DocumentProcessor) -> None:
         expect(4, "John Doe", "passport", passport)
         expect(5, "RAVI SHARMA", "idCard", {"aadharNumber": "9876-5432-1098", "dateOfBirth": "1975-11-23", "address": None})
         expect(6, "ALEX KUMAR", "unknown", None)
-        expect(7, "Sara Lee", "unknown", None)
+        expect(7, "Sara Lee", "panCard", {"panNumber": "FGHIJ5678K", "dateOfBirth": "1988-08-05", "fatherName": "PETER LEE"})
         expect(8, None, "passport", {"passportNumber": "CD7654321", "dateOfBirth": "1979-02-02", "expiryDate": "2029-01-01"})
         expect(9, None, "unknown", None, "download failed: blocked URL")
         expect(10, None, "unknown", None, "download failed: host 'samples.test' returned HTTP 404")

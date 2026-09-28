@@ -5,7 +5,7 @@ Field names are part of the API contract: note 'aadharNumber' and 'assessmentYea
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.utils.normalize import clean_text, to_aadhaar_number, to_amount, to_iso_date
+from app.utils.normalize import clean_text, to_aadhaar_number, to_amount, to_iso_date, to_pan
 
 AS_PRINTED = "Copy exactly as printed. null if not visible."
 
@@ -75,3 +75,24 @@ class TaxReturnData(BaseModel):
     @classmethod
     def _amounts(cls, value: str | None) -> str | None:
         return to_amount(value)
+
+
+class PanCardData(BaseModel):
+    panNumber: str | None = Field(description=f"The 10-character Permanent Account Number, e.g. 'ABCDE1234F'. {AS_PRINTED}")
+    dateOfBirth: str | None = Field(description=f"Holder's date of birth. {AS_PRINTED}")
+    fatherName: str | None = Field(description=f"The father's name printed on the card. {AS_PRINTED}")
+
+    @field_validator("panNumber")
+    @classmethod
+    def _pan(cls, value: str | None) -> str | None:
+        return to_pan(value)
+
+    @field_validator("dateOfBirth")
+    @classmethod
+    def _date(cls, value: str | None) -> str | None:
+        return to_iso_date(value)
+
+    @field_validator("fatherName")
+    @classmethod
+    def _father(cls, value: str | None) -> str | None:
+        return clean_text(value)
