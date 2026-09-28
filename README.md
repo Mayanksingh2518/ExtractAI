@@ -4,7 +4,7 @@ A FastAPI service, with a built-in web page, that takes a batch of documents (UR
 
 All inference runs on your own machine. Documents are never sent to a third-party AI service.
 
-> **Status:** all 19 stages are done and tested (see [Build stages](#build-stages)). [PROGRESS.md](PROGRESS.md) has every decision and test result.
+> **Status:** all 20 stages are done and tested (see [Build stages](#build-stages)). [PROGRESS.md](PROGRESS.md) has every decision and test result.
 
 ![The ExtractAI web page: four uploaded fake documents grouped by owner, with the extracted fields](docs/screenshot.png)
 
@@ -169,6 +169,30 @@ Plain HTML, CSS and JavaScript in `app/static/` (no framework, no build step), s
 - **API key** field for servers with `API_KEYS`. It's kept in memory, or in `sessionStorage` (this tab only) if you tick "Remember"; never in `localStorage`.
 - Light and dark themes (follows the system), keyboard-usable tabs, and a phone-width layout.
 - **Security:** everything from the server, including model output, is shown with `textContent`, never `innerHTML`, so text in a document can't run as code. `/ui/` is sent with a strict Content-Security-Policy (only the page's own files, only same-origin requests, no framing), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+
+## n8n workflow
+
+`n8n/` holds a ready-made [n8n](https://n8n.io) automation: **an n8n form where someone uploads documents → ExtractAI extracts the data → one row per document in Google Sheets → a summary page for the person who uploaded**.
+
+```
+Upload documents (n8n Form) → One item per file (Code) → ExtractAI: extract data (HTTP, X-API-Key)
+  → Rows for Sheets (Code: Aadhaar masked) → Google Sheets (append) → Summary (Code) → Show result (Form ending)
+```
+
+**Run it locally:**
+1. Start ExtractAI: `uvicorn app.main:app` (set `API_KEYS` in `.env` if you want the key checked).
+2. Start n8n: `docker compose -f n8n/docker-compose.yml up -d`, open http://localhost:5678 and create your account.
+3. **Workflows → Import from file →** `n8n/extractai-workflow.json`.
+4. Create a **Header Auth** credential named `ExtractAI API key` (name `X-API-Key`, value = one of your `API_KEYS`) and select it in the *ExtractAI: extract data* node.
+5. Connect Google Sheets (see below), publish the workflow, and open the form at http://localhost:5678/form/extractai
+
+**How it's built:**
+- n8n runs in Docker, bound to `127.0.0.1`, and reaches the API on the Mac through `host.docker.internal`.
+- n8n's HTTP node sends one binary field per request, so the upload is split into **one request per file**, each with retries and a 10-minute timeout. A failed file becomes an error row and never stops the others.
+- **Aadhaar numbers are masked** (`XXXX-XXXX-1234`) before the rows leave the machine for Google Sheets. Text from documents is HTML-escaped on the result page.
+- n8n stores each run's uploaded files and results, so the compose file **deletes execution data after 24 hours** (`EXECUTIONS_DATA_MAX_AGE=24`), and successful runs aren't saved at all.
+
+**Sheet columns:** Processed at · File · Owner · Type · Document name · ID number · Date of birth · Details · Error.
 
 ## Constraints and limits
 
@@ -370,3 +394,4 @@ The project was built one tested stage at a time. Stages 1–12 cover the origin
 | 17 | pytest | Old test scripts converted to `tests/` (pytest is dev-only); `model` and `network` markers | `pytest`: 177 offline tests in 16 s. `pytest -m ""`: **251 passed**. Deliberately broken code made the tests fail |
 | 18 | File upload | `POST /document-check/upload` (1–50 files, multipart); the processor fetches each document by download or by saving the upload, and the rest of the flow is shared | 22 tests; a real 120 MB upload refused with 413 before a byte was sent; file names logged 0 times |
 | 19 | Web page | Plain HTML/CSS/JS at `/ui/`: upload and URL tabs, API key field, progress timer, results grouped by owner, JSON export, light/dark, phone layout; strict CSP | 11 tests; driven in headless Chrome: real uploads grouped correctly, 401/429/503 explained, a hostile owner name shown as text (no script ran), no CSP violations, no horizontal scroll at 390 px |
+| 20 | n8n workflow | Local n8n (Docker) with Form → ExtractAI → rows (Aadhaar masked) → Google Sheets → summary page; importable JSON; 24 h execution pruning | Real runs: 2 and 3 documents grouped and extracted, a fake file and a wrong API key each became an error row without stopping the run |

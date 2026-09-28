@@ -1,0 +1,203 @@
+{
+  "name": "ExtractAI: document upload to Google Sheets",
+  "nodes": [
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000001",
+      "name": "Upload documents",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "5b3f5c8e-6a0e-4f65-9d6a-extractai0001",
+      "parameters": {
+        "formTitle": "ExtractAI document check",
+        "formDescription": "Upload passports, Aadhaar cards, PAN cards or tax returns (PDF, PNG or JPG, up to 20 MB each). A local AI model classifies each one, extracts its data and adds a row per document to Google Sheets. Use test documents only.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Documents",
+              "fieldType": "file",
+              "multipleFiles": true,
+              "acceptFileTypes": ".pdf, .png, .jpg, .jpeg",
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {
+          "path": "extractai",
+          "appendAttribution": false
+        }
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000002",
+      "name": "One item per file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// The form puts every uploaded file on ONE item (Documents_0, Documents_1, ...).\n// The HTTP Request node sends one binary field per request, so make one item per file.\nconst out = [];\nfor (const item of $input.all()) {\n  const keys = Object.keys(item.binary ?? {}).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));\n  for (const key of keys) {\n    out.push({\n      json: { fileNumber: out.length + 1, fileName: item.binary[key].fileName ?? `file ${out.length + 1}` },\n      binary: { file: item.binary[key] },\n    });\n  }\n}\nif (out.length === 0) throw new Error('No files were uploaded');\nreturn out;"
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000003",
+      "name": "ExtractAI: extract data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "ExtractAI API key"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/document-check/upload",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "file"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000004",
+      "name": "Rows for Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// One row per document. Aadhaar numbers are masked before anything leaves this machine.\nconst TYPES = { passport: 'Passport', idCard: 'Aadhaar', taxReturn: 'Tax return', panCard: 'PAN card', unknown: 'Unknown' };\nconst LABELS = { passportNumber: 'Passport no.', expiryDate: 'Expiry', address: 'Address', assessmentYear: 'Assessment year',\n  taxPayerName: 'Taxpayer', totalIncome: 'Total income', taxPaid: 'Tax paid', taxDue: 'Tax due', fatherName: 'Father' };\nconst mask = (n) => (typeof n === 'string' && /\\d{4}$/.test(n) ? `XXXX-XXXX-${n.slice(-4)}` : n);\nconst files = $('One item per file').all();\nconst processedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');\n\nconst rows = [];\n$input.all().forEach((item, i) => {\n  const file = files[i]?.json ?? {};\n  const base = { 'Processed at': processedAt, 'File': file.fileName ?? '', 'Owner': '', 'Type': '', 'Document name': '',\n    'ID number': '', 'Date of birth': '', 'Details': '', 'Error': '' };\n  // n8n splits a JSON array response into items: with one file per request, each item is one owner group.\n  if (!Array.isArray(item.json.documents)) {\n    // The HTTP node returned an error (for example 401, 429 or 503) instead of results.\n    const raw = String(item.json.error?.message ?? item.json.message ?? 'request failed');\n    // n8n reports e.g. 401 - \"{\\\"detail\\\":\\\"missing or invalid API key\\\"}\": keep the status and the API's detail.\n    const status = raw.match(/^(\\d{3})\\b/)?.[1];\n    const detail = raw.match(/detail\\\\?\"\\s*:\\s*\\\\?\"([^\"\\\\]+)/)?.[1];\n    const message = status ? `HTTP ${status}${detail ? `: ${detail}` : ''}` : raw;\n    rows.push({ ...base, Type: 'Unknown', Error: message.slice(0, 300) });\n    return;\n  }\n  for (const group of [item.json]) {\n    for (const doc of group.documents) {\n      const data = doc.data ?? {};\n      const id = data.passportNumber ?? mask(data.aadharNumber) ?? data.panNumber ?? '';\n      const details = Object.entries(data)\n        .filter(([k]) => !['passportNumber', 'aadharNumber', 'panNumber', 'dateOfBirth'].includes(k))\n        .map(([k, v]) => `${LABELS[k] ?? k}: ${v ?? 'not visible'}`).join('; ');\n      rows.push({ ...base, Owner: group.ownerName ?? '', Type: TYPES[doc.documentType] ?? doc.documentType,\n        'Document name': doc.documentName ?? '', 'ID number': id ?? '', 'Date of birth': data.dateOfBirth ?? '',\n        Details: details, Error: doc.error ?? '' });\n    }\n  }\n});\nreturn rows.map((json) => ({ json }));"
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000006",
+      "name": "Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Text for the form's last page. Values come from documents, so escape them.\nconst esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst rows = $('Rows for Sheets').all().map((i) => i.json);\nconst owners = new Map();\nfor (const r of rows) {\n  if (r.Error && !r.Owner) continue;\n  const key = (r.Owner || 'No owner found').toLowerCase();\n  if (!owners.has(key)) owners.set(key, { name: r.Owner || 'No owner found', types: [] });\n  owners.get(key).types.push(r.Type);\n}\nconst problems = rows.filter((r) => r.Error);\nconst lines = [...owners.values()].map((o) => `${esc(o.name)}: ${esc(o.types.join(', '))}`);\nif (problems.length) lines.push(`Problems: ${problems.map((r) => `${esc(r.File)} (${esc(r.Error)})`).join('; ')}`);\nreturn [{ json: { title: `${rows.length} document${rows.length === 1 ? '' : 's'} processed`, message: lines.join(' | ') || 'No documents' } }];"
+      }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000007",
+      "name": "Show result",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        0
+      ],
+      "webhookId": "5b3f5c8e-6a0e-4f65-9d6a-extractai0002",
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "={{ $json.title }}",
+        "completionMessage": "={{ $json.message }}"
+      }
+    }
+  ],
+  "connections": {
+    "Upload documents": {
+      "main": [
+        [
+          {
+            "node": "One item per file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One item per file": {
+      "main": [
+        [
+          {
+            "node": "ExtractAI: extract data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ExtractAI: extract data": {
+      "main": [
+        [
+          {
+            "node": "Rows for Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows for Sheets": {
+      "main": [
+        [
+          {
+            "node": "Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summary": {
+      "main": [
+        [
+          {
+            "node": "Show result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all"
+  }
+}

@@ -4,3 +4,4 @@ __pycache__/
 .env
 documents/
 .pytest_cache/
+n8n/.login.txt

@@ -1,0 +1,28 @@
+# Local n8n for the ExtractAI workflow (Stage 20).
+# Start:  docker compose -f n8n/docker-compose.yml up -d     then open http://localhost:5678
+# Stop:   docker compose -f n8n/docker-compose.yml down       (workflows are kept in the n8n_data volume)
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: extractai-n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"   # only this Mac can open it
+    environment:
+      - GENERIC_TIMEZONE=Asia/Kolkata
+      - TZ=Asia/Kolkata
+      - N8N_DIAGNOSTICS_ENABLED=false        # no usage telemetry
+      - N8N_PERSONALIZATION_ENABLED=false
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem   # uploaded files kept on disk, not in memory
+      # Executions hold the uploaded documents and extracted data: delete them after 24 hours.
+      # (A run whose result page was never opened stays "waiting" and is pruned the same way.)
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=24
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=1000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # lets n8n reach the ExtractAI API running on this Mac
+    volumes:
+      - n8n_data:/home/node/.n8n
+volumes:
+  n8n_data:

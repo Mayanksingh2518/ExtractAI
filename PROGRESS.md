@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (all 19 stages done)_
+_Last updated: 2026-09-28 (Stage 20 in progress: waiting for Google credential)_
 
 ---
 
@@ -585,6 +585,26 @@ Items are ticked only once they have been **built and tested**.
   - `docs/screenshot.png` (light mode, 4 fake documents, 3 owners) added to the README
   - Regression: `pytest` **209 passed** (offline)
 
+### Stage 20: n8n workflow (Form → ExtractAI → Google Sheets)
+- [x] **Decisions (user, 2026-09-28):** trigger = **n8n Form upload**, output = **Google Sheets**. n8n runs **locally in Docker** (free; can reach the API on this Mac; documents stay local until the rows go to Sheets)
+- [x] `n8n/docker-compose.yml`: `n8n:latest` (**2.40.7**), port bound to `127.0.0.1:5678`, `host.docker.internal` → the Mac, telemetry off, binary data on disk, **executions pruned after 24 h**. Docker Hub failed once with `unexpected EOF` while fetching a token; a retry worked
+- [x] Owner account created through `/rest/owner/setup` as `admin@example.com` with a random password in **`n8n/.login.txt` (gitignored, mode 600)**. Scripted REST access needs a `browser-id` header and the `n8n-auth` cookie sent explicitly (it's marked Secure)
+- [x] `n8n/extractai-workflow.json` (importable; the credential is referenced by name):
+  - **Upload documents** (Form Trigger 2.6, path `extractai`, multi-file field, `.pdf, .png, .jpg, .jpeg`) → **One item per file** (Code) → **ExtractAI: extract data** (HTTP Request 4.2, `POST http://host.docker.internal:8000/document-check/upload`, multipart field `files`, Header Auth credential `ExtractAI API key`, 3 tries / 5 s apart, 10 min timeout, **on error: continue**) → **Rows for Sheets** (Code) → **Summary** (Code) → **Show result** (Form 2.5, Form Ending)
+  - **Decision: one request per file.** The n8n source (`HttpRequestV3`) shows each `formBinaryData` parameter maps to one binary field, so a variable number of files can't go in one request. With one document per request, the API's owner grouping is recreated in the Summary node (case-insensitive)
+  - n8n splits a JSON **array** response into items, so each HTTP item is one owner group (found in testing; code adjusted)
+  - Rows: Processed at, File, Owner, Type, Document name, ID number (passport / **masked Aadhaar** / PAN), Date of birth, Details, Error. HTTP errors are shortened to `HTTP 401: missing or invalid API key`
+  - Summary text is HTML-escaped before it's shown on the form's result page
+  - Workflow settings: successful executions not saved; failed ones saved (and pruned after 24 h)
+- [x] **Tested with real runs** (form submitted with curl like the browser does; the result page read from `/form-waiting/<id>`):
+  - passport + PAN card → *"2 documents processed — JOHN DOE: Passport | SARA LEE: PAN card"* (50 s)
+  - Aadhaar + a text file named `.png` + tax return → *"3 documents processed — MARIA DOE: Aadhaar | JOHN DOE: Tax return | Problems: fake.png (upload rejected: ...)"*; rows checked: Aadhaar **`XXXX-XXXX-0123`**, file names matched to the right rows although n8n sent the requests in parallel, the fake file became an error row
+  - **Wrong API key** in the credential → API 401 (retried 3×), error row, result page lists the problem, workflow finished; key found 0 times in the API log; key restored
+  - Passport with no visible name → row with blank owner and extracted data
+  - A form submitted right after re-publishing hit "webhook is not registered" once; a second later it worked (n8n registers the form asynchronously)
+  - All test executions deleted afterwards; no uploaded files left in n8n's storage
+- [ ] **Google Sheets node:** waiting for the user's Google credential (Google Cloud OAuth client + Sheets API), then add an *Append row* node between *Rows for Sheets* and *Summary*, test, and push
+
 ---
 
 ## 6. File map (what exists now)
@@ -595,6 +615,9 @@ app/config.py                  Settings from .env (get_settings, parse_api_keys)
 app/api/document_check.py      POST /document-check (URLs) and POST /document-check/upload (1-50 files, body parsed after all checks)
 app/static/                    the web page at /ui/: index.html, style.css, app.js (textContent only), favicon.svg
 docs/screenshot.png            README screenshot (fake documents)
+n8n/docker-compose.yml         local n8n 2.x (127.0.0.1:5678, host.docker.internal, 24 h pruning)
+n8n/extractai-workflow.json    importable workflow: Form -> ExtractAI -> rows (Aadhaar masked) -> [Google Sheets] -> summary page
+n8n/.login.txt                 local n8n login (gitignored)
 app/services/uploads.py        save_upload(): uploaded file -> workspace, size cap, type from magic bytes
 app/api/security.py            optional X-API-Key auth + RateLimiter (sliding window per key / IP)
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
@@ -637,7 +660,7 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: all 19 stages are done, tested and pushed.** The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
+**Status: Stages 1–19 are done and pushed. Stage 20 (n8n) is built and tested except the Google Sheets node, which needs the user's Google credential.** The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
 
 **To use it:** `source .venv/bin/activate && uvicorn app.main:app`, then open http://127.0.0.1:8000/ui/
 
