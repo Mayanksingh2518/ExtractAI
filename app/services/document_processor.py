@@ -1,9 +1,12 @@
-"""Runs the full flow for one request: download -> pages -> classify -> extract -> group by owner."""
+"""Runs the full flow for one request: download or upload -> pages -> classify -> extract -> group by owner."""
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from typing import BinaryIO
 
 from app.config import Settings
 from app.pipelines.base import ExtractionError
@@ -13,6 +16,7 @@ from app.schemas.response import DocumentResult, OwnerResult
 from app.services.classifier import ClassificationError, DocumentClassifier
 from app.services.downloader import DocumentDownloader, DownloadError
 from app.services.grouping import group_by_owner
+from app.services.uploads import UploadError, save_upload
 from app.utils.pdf import PdfConversionError, to_page_images
 from app.utils.workspace import request_workspace
 
@@ -21,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 class ModelUnavailableError(Exception):
     """The vision model can't be reached, so no document can be processed."""
+
+
+# Puts one document's file into its folder and returns the path: a download or a saved upload.
+Fetch = Callable[[Path], Awaitable[Path]]
 
 
 @dataclass
@@ -42,6 +50,7 @@ class DocumentProcessor:
         self._registry = registry
         self._dpi = settings.pdf_render_dpi
         self._max_pages = settings.max_pdf_pages
+        self._max_file_bytes = settings.max_download_bytes
         # Shared by every request, so N concurrent API calls still never put more than this many
         # documents in flight (and never flood Ollama). Covers the whole document, download to extract.
         self._slots = asyncio.Semaphore(settings.max_concurrent_documents)
@@ -50,39 +59,59 @@ class DocumentProcessor:
         # image work from classify (about 9 s -> 3 s). Downloads and PDF rendering stay outside it.
         self._model_slots = asyncio.Semaphore(settings.model_parallel_requests)
 
+    async def ensure_ready(self) -> None:
+        """Raise ModelUnavailableError if the model can't be used right now."""
+        if not await self._classifier.is_ready():
+            raise ModelUnavailableError("document model is not available")
+
     async def process(self, urls: list[str]) -> list[OwnerResult]:
         """Process every URL concurrently (one failure never stops the others), then group the results by owner.
 
         Raises ModelUnavailableError up front (before any download) if the model can't be used.
         """
-        if not await self._classifier.is_ready():
-            raise ModelUnavailableError("document model is not available")
+        return await self._run([partial(self._download, url) for url in urls])
+
+    async def process_uploads(self, files: list[BinaryIO]) -> list[OwnerResult]:
+        """Same as process(), for uploaded files (binary file objects, in upload order)."""
+        return await self._run([partial(self._save_upload, file) for file in files])
+
+    async def _download(self, url: str, doc_dir: Path) -> Path:
+        return (await self._downloader.download(url, doc_dir, "document")).path
+
+    async def _save_upload(self, file: BinaryIO, doc_dir: Path) -> Path:
+        path, _ = await asyncio.to_thread(save_upload, file, doc_dir, "document", self._max_file_bytes)
+        return path
+
+    async def _run(self, fetchers: list[Fetch]) -> list[OwnerResult]:
+        await self.ensure_ready()
         with request_workspace() as workspace:
             # gather returns results in input order, whatever order the documents finish in.
             processed = await asyncio.gather(
-                *(self._process_limited(index, url, workspace) for index, url in enumerate(urls))
+                *(self._process_limited(index, fetch, workspace) for index, fetch in enumerate(fetchers))
             )
         groups = group_by_owner(processed, lambda doc: doc.ownerName)
         return [OwnerResult(ownerName=g.ownerName, documents=[doc.result for doc in g.documents]) for g in groups]
 
-    async def _process_limited(self, index: int, url: str, workspace: Path) -> ProcessedDocument:
+    async def _process_limited(self, index: int, fetch: Fetch, workspace: Path) -> ProcessedDocument:
         # Never raises: an exception here would make gather() return early and delete the
         # workspace while other documents are still using it.
         async with self._slots:
             try:
-                return await self._process_one(index, url, workspace)
+                return await self._process_one(index, fetch, workspace)
             except Exception as exc:
                 logger.error("Document %d: unexpected %s", index, type(exc).__name__)
                 return self._failed(index, "internal error", log=False)
 
-    async def _process_one(self, index: int, url: str, workspace: Path) -> ProcessedDocument:
+    async def _process_one(self, index: int, fetch: Fetch, workspace: Path) -> ProcessedDocument:
         doc_dir = workspace / f"doc{index:02d}"  # one folder per document, so page file names never collide
         doc_dir.mkdir()
         try:
-            downloaded = await self._downloader.download(url, doc_dir, "document")
-            pages = await to_page_images(downloaded.path, doc_dir, self._dpi, self._max_pages)
+            path = await fetch(doc_dir)
+            pages = await to_page_images(path, doc_dir, self._dpi, self._max_pages)
         except DownloadError as exc:
             return self._failed(index, f"download failed: {exc}")
+        except UploadError as exc:
+            return self._failed(index, f"upload rejected: {exc}")
         except PdfConversionError as exc:
             return self._failed(index, f"could not read document: {exc}")
         except Exception as exc:  # a bug must not take down the whole batch

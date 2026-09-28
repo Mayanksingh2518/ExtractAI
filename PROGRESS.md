@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (all 17 stages done)_
+_Last updated: 2026-09-28 (Stage 18 done; Stage 19 frontend next)_
 
 ---
 
@@ -550,6 +550,21 @@ Items are ticked only once they have been **built and tested**.
   - `OLLAMA_HOST=http://localhost:1 pytest -m model`: **45 skipped**, none failed
   - **The tests catch real bugs** (each deliberate bug added then reverted with `git checkout`): context-guard margin 0 → 1 test failed; auth check disabled → 7 failed; "always make the 2nd call" → 1 failed; null words kept by `clean_text` → 6 failed
 
+### Stage 18: File upload endpoint ✅
+- [x] **Decisions (user, 2026-09-28):** frontend in **plain HTML/CSS/JS** served by FastAPI (no Node, no new framework), with **URLs and file upload**. Upload needs **`python-multipart`** (FastAPI's official form parser), now in `requirements.txt`; the user approved it by choosing upload
+- [x] `POST /document-check/upload`: 1–50 files in parts named `files`
+  - **The body is parsed by the endpoint, not by FastAPI**, so auth, the rate limit (the `authorize` dependency), `Content-Type` (415), `Content-Length` (411 if missing, 413 over `MAX_UPLOAD_REQUEST_BYTES`, default 100 MB) and the model check (503) all happen **before any uploaded byte is read**
+  - `request.form(max_files=51, max_fields=0)`: a text field or 52+ files → 400; 0 or 51 files → 422. The form is always closed, which deletes Starlette's spooled temp files
+  - **Decision:** 1–50 files. The brief's minimum of 10 applies to `documentUrls`; for uploads 1 is more useful
+- [x] `app/services/uploads.py` `save_upload()`: copies in 1 MB chunks into the private workspace, at most `MAX_DOWNLOAD_BYTES` per file, rejects empty files, **type from magic bytes only** (`detect_kind`, now shared with the downloader), saved as `document.<pdf|png|jpg>`; no partial file left. The client's file name and content type are never used or logged
+- [x] `DocumentProcessor` refactor: each document has a **fetch** step (`_download(url)` or `_save_upload(file)`); `process(urls)` and `process_uploads(files)` share `_run()`, so pages → classify → extract → group is the same code. New `ensure_ready()`. Upload problems → per-document `error: "upload rejected: ..."`
+- [x] **Tested:** `tests/test_upload.py` **22 passed** (21 offline + 1 model):
+  - `save_upload`: PDF/PNG/JPEG named by content; text, empty and oversized files rejected with no partial file
+  - Endpoint: 3 valid files → 200 in order, workspace deleted; a text file among valid ones fails alone; a file over the per-file limit fails alone; file name `SECRET-...` in neither response nor logs; 0 files → 422, 50 → 200, 51 → 422, 52 → 400; text field → 400; JSON → 415; **no Content-Length → 411, 413 over the limit, 503 model down, 401 without a key: in all four the body was never read** (checked with a body that records reads); OpenAPI documents the multipart body and statuses
+  - Model: passport + Aadhaar + tax return uploaded → John Doe [passport, taxReturn], Maria Doe [idCard]
+  - Real server (uvicorn + curl): passport, PAN card, receipt → JOHN DOE / SARA LEE / no owner in 41 s; **120 MB upload → 413 in 2 ms, 0 bytes sent**; JSON → 415; file name 0 times in the log; no temp folders left
+  - Regression: `pytest` **198 passed** (offline)
+
 ---
 
 ## 6. File map (what exists now)
@@ -557,7 +572,8 @@ Items are ticked only once they have been **built and tested**.
 ```
 app/main.py                    FastAPI app, lifespan (shared clients), logging, 422 handler, 500 middleware, GET /; api_keys + rate_limiter on app.state
 app/config.py                  Settings from .env (get_settings, parse_api_keys)
-app/api/document_check.py      POST /document-check -> list[OwnerResult]; 503 on ModelUnavailableError; authorize dependency
+app/api/document_check.py      POST /document-check (URLs) and POST /document-check/upload (1-50 files, body parsed after all checks)
+app/services/uploads.py        save_upload(): uploaded file -> workspace, size cap, type from magic bytes
 app/api/security.py            optional X-API-Key auth + RateLimiter (sliding window per key / IP)
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
 app/schemas/classification.py  DocumentType enum (+ panCard) + Classification (documentName first!)
@@ -599,14 +615,16 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: all 17 stages are done, tested and pushed.** The brief (Stages 1–12) plus the 5 optional steps the user asked for on 2026-09-28:
+**Status: Stages 1–18 are done, tested and pushed. Stage 19 (the web page) is next.** The brief (Stages 1–12) plus the 5 optional steps the user asked for on 2026-09-28:
 - **13:** realistic fake documents; extra pages only when page 1 leaves fields null (Aadhaar 2, tax return 3); `taxDue` = balance payable; context-window guard; DPI 100 kept (150: same accuracy, 2× slower)
 - **14:** `panCard` added through the registry with no API changes
 - **15:** optional `X-API-Key` auth and per-client rate limiting (on by default: 10/min)
 - **16:** Ollama 0.34.4: qwen3-vl **still** can't run in parallel; 5.9 GB instead of 7.4 GB; benchmark about 200 s vs 145 s before, cause not isolated
 - **17:** pytest (dev-only): `pytest` (offline, 16 s) / `caffeinate -i pytest -m ""` (everything, about 10 min)
 
-**Possible next steps (ask the user):**
+**Next action: Stage 19**, the frontend: `app/static/` (index.html, style.css, app.js) served at `/ui` with FastAPI's StaticFiles. URL tab + upload tab, API key field, progress timer, results grouped by owner, errors shown clearly; data rendered with `textContent` only (no `innerHTML`), plus a Content-Security-Policy.
+
+**Other possible next steps (ask the user):**
 1. Re-run `caffeinate -i python -u -m scripts.benchmark_concurrency 2` on a **cold Mac on mains power**, to settle whether Ollama 0.34.4 is slower than 0.14.1 (Stage 16).
 2. Test with real-world scans (only with documents the user has the right to process), and adjust DPI / `max_pages` if needed.
 3. Add a driving licence type the same way as the PAN card (Stage 14).

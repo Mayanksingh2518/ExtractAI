@@ -76,6 +76,28 @@ All inference runs on your own machine. Documents are never sent to a third-part
 
 Problems with individual documents are **not** request errors: the request returns `200`, and the document carries an `error` (see below).
 
+### `POST /document-check/upload`
+
+The same processing for files from your computer: **1 to 50** PDF, PNG or JPG files as `multipart/form-data`, each in a part named `files`. The response is the same as above; `sourceIndex` is the file's position in the upload.
+
+```zsh
+curl -X POST http://127.0.0.1:8000/document-check/upload \
+     -F files=@passport.png -F files=@tax_return.pdf     # + -H "X-API-Key: ..." if API_KEYS is set
+```
+
+- The API key, the rate limit, the model check and the size limit are all checked **before any uploaded bytes are read**.
+- Each file: at most `MAX_DOWNLOAD_BYTES`; its type is decided by its first bytes (never by its name or declared type). A bad file fails alone, with `error: "upload rejected: ..."`.
+- File names are never used, returned or logged.
+
+| Status | When |
+|---|---|
+| `400` | The multipart body can't be parsed, has more than 51 file parts, or has a text field |
+| `411` | No `Content-Length` header |
+| `413` | The request is larger than `MAX_UPLOAD_REQUEST_BYTES` (default 100 MB) |
+| `415` | The body isn't `multipart/form-data` |
+| `422` | No files, or more than 50 |
+| `401` / `429` / `503` | As for `/document-check` |
+
 ### Document types and extracted fields
 
 | `documentType` | What it covers | `data` fields |
@@ -137,7 +159,7 @@ POST /document-check
 
 ### Design rules
 
-- **Stack:** Python 3.11/3.12, FastAPI, Uvicorn, Pydantic v2, httpx, PyMuPDF (`import pymupdf`, not `fitz`), Pillow, python-dotenv, Ollama. **No other frameworks or packages** at runtime (pytest is a dev-only test dependency in `requirements-dev.txt`). For example, settings use a plain dataclass, not `pydantic-settings`, and Ollama is called without the `ollama` Python package.
+- **Stack:** Python 3.11/3.12, FastAPI, Uvicorn, Pydantic v2, httpx, PyMuPDF (`import pymupdf`, not `fitz`), Pillow, python-dotenv, python-multipart (FastAPI's form parser, for uploads), Ollama. **No other frameworks or packages** at runtime (pytest is a dev-only test dependency in `requirements-dev.txt`). For example, settings use a plain dataclass, not `pydantic-settings`, and Ollama is called without the `ollama` Python package.
 - **The LLM stays local.** `OLLAMA_HOST` must point at your own machine or network.
 - **Configuration comes from `.env`** through `app/config.py`. No secrets are hardcoded.
 
@@ -231,6 +253,7 @@ Use the `-instruct` models. The thinking variant ignores `think: false` and was 
 | `DOWNLOAD_TIMEOUT_SECONDS` | `30` | Total time limit per download |
 | `MAX_DOWNLOAD_BYTES` | `20971520` | 20 MB per document |
 | `MAX_REDIRECTS` | `3` | Redirects followed per download (each one checked again) |
+| `MAX_UPLOAD_REQUEST_BYTES` | `104857600` (100 MB) | Largest whole upload request; each file is also limited by `MAX_DOWNLOAD_BYTES` |
 | `PDF_RENDER_DPI` | `100` | PDF page render resolution |
 | `MAX_PDF_PAGES` | `10` | Pages rendered per PDF; the rest are skipped |
 | `MAX_CONCURRENT_DOCUMENTS` | `2` | Documents processed at once, **shared by all requests** |
@@ -281,6 +304,7 @@ Model tests are skipped automatically if Ollama or the model isn't available.
 | `tests/test_concurrency.py` | | Concurrency limits, model lock, order, failure isolation, cancellation |
 | `tests/test_hardening.py` | | 422 without input, 503, safe 500, readiness check, context-window guard |
 | `tests/test_security.py` | | API keys, rate limiting, auth before validation |
+| `tests/test_upload.py` | (one `model`) | Upload endpoint: limits checked before reading, bad files fail alone, names never echoed |
 | `tests/test_classifier.py` | (some `model`) | Name cross-check; classification of 9 samples; errors |
 | `tests/test_extraction.py` | `model` | Exact values extracted from 9 samples |
 | `tests/test_realistic.py` | `model` | 7 harder realistic documents, every field |
@@ -327,3 +351,4 @@ The project was built one tested stage at a time. Stages 1–12 cover the origin
 | 15 | Auth and rate limiting | Optional `X-API-Key` (constant-time check, never logged); sliding-window rate limit per key or IP with `429` + `Retry-After` | 33 cases plus a real server: 401, 200, 200, 429; the key appeared 0 times in the log |
 | 16 | Ollama upgrade | Ollama 0.14.1 → 0.34.4 | qwen3-vl still can't run in parallel; memory 7.4 → 5.9 GB. Benchmark about 200 s vs 145 s, measured on battery after a day of load, so the cause isn't isolated yet |
 | 17 | pytest | Old test scripts converted to `tests/` (pytest is dev-only); `model` and `network` markers | `pytest`: 177 offline tests in 16 s. `pytest -m ""`: **251 passed**. Deliberately broken code made the tests fail |
+| 18 | File upload | `POST /document-check/upload` (1–50 files, multipart); the processor fetches each document by download or by saving the upload, and the rest of the flow is shared | 22 tests; a real 120 MB upload refused with 413 before a byte was sent; file names logged 0 times |

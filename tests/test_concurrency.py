@@ -139,10 +139,10 @@ async def test_escaping_exception_becomes_internal_error_and_the_rest_complete()
     processor, _ = make(2)
     original = processor._process_one
 
-    async def explode_on_3(index, url, workspace):
+    async def explode_on_3(index, fetch, workspace):
         if index == 3:
             raise OSError("disk full")
-        return await original(index, url, workspace)
+        return await original(index, fetch, workspace)
 
     processor._process_one = explode_on_3
     docs = flat(await processor.process(urls(10)))

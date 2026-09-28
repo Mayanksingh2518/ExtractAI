@@ -11,7 +11,9 @@ class DocumentResult(BaseModel):
     data: dict[str, Any] | None = Field(
         description="Type-specific extracted data; null for types without a pipeline or when extraction failed."
     )
-    sourceIndex: int = Field(description="Position of this document in the request's documentUrls (0-based).")
+    sourceIndex: int = Field(
+        description="Position of this document in the request (0-based): in documentUrls, or among the uploaded files."
+    )
     error: str | None = Field(default=None, description="Why this document could not be fully processed; null on success.")
 
 

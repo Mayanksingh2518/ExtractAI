@@ -149,7 +149,7 @@ class DocumentDownloader:
                         header += chunk[: 8 - len(header)]
                     file.write(chunk)
 
-            kind = _detect_kind(header)
+            kind = detect_kind(header)
             if kind is None:
                 raise DownloadError("file content is not a PDF, PNG or JPEG")
             if declared_kind is not None and kind is not declared_kind:
@@ -163,7 +163,8 @@ class DocumentDownloader:
             raise
 
 
-def _detect_kind(header: bytes) -> FileKind | None:
+def detect_kind(header: bytes) -> FileKind | None:
+    """The file type from its first bytes (magic bytes), or None if it isn't a PDF, PNG or JPEG."""
     for kind, signature in SIGNATURES.items():
         if header.startswith(signature):
             return kind
