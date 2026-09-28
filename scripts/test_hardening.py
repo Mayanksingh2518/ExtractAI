@@ -79,6 +79,8 @@ async def main() -> None:
     settings = get_settings()
     capture = LogCapture()
     logging.getLogger().addHandler(capture)
+    app.state.rate_limiter = None  # this script sends more requests than the default limit (tested in test_security)
+    app.state.api_keys = ()
     transport = httpx.ASGITransport(app=app)  # no lifespan: every processor is injected
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         post = lambda body, **kw: client.post("/document-check", **({"json": body} if body is not None else kw))

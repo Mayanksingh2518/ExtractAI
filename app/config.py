@@ -22,6 +22,21 @@ class Settings:
     max_pdf_pages: int
     max_concurrent_documents: int
     model_parallel_requests: int
+    api_keys: tuple[str, ...]
+    rate_limit_requests: int
+    rate_limit_window_seconds: float
+
+
+MIN_API_KEY_LENGTH = 16
+
+
+def parse_api_keys(raw: str) -> tuple[str, ...]:
+    """Comma-separated keys; empty means authentication is off. Short keys are refused
+    (the message never includes the key)."""
+    keys = tuple(key.strip() for key in raw.split(",") if key.strip())
+    if any(len(key) < MIN_API_KEY_LENGTH for key in keys):
+        raise ValueError(f"API_KEYS: every key must be at least {MIN_API_KEY_LENGTH} characters")
+    return keys
 
 
 @lru_cache
@@ -40,4 +55,7 @@ def get_settings() -> Settings:
         max_pdf_pages=int(os.getenv("MAX_PDF_PAGES", "10")),
         max_concurrent_documents=max(1, int(os.getenv("MAX_CONCURRENT_DOCUMENTS", "2"))),
         model_parallel_requests=max(1, int(os.getenv("MODEL_PARALLEL_REQUESTS", "1"))),
+        api_keys=parse_api_keys(os.getenv("API_KEYS", "")),
+        rate_limit_requests=max(0, int(os.getenv("RATE_LIMIT_REQUESTS", "10"))),
+        rate_limit_window_seconds=float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")),
     )

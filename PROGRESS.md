@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (Stages 13-14 done; 15-17 in progress)_
+_Last updated: 2026-09-28 (Stages 13-15 done; 16-17 in progress)_
 
 ---
 
@@ -497,6 +497,30 @@ Items are ticked only once they have been **built and tested**.
   - `test_document_check` **25/25**: the PAN card in the 13-URL request is now `panCard` with data, in the "Sara Lee" group; everything else unchanged
   - `test_pipelines` 27/27
 
+### Stage 15: Optional API-key authentication and rate limiting ✅
+- [x] Settings (config, `.env.example`, `.env`): `API_KEYS` (comma-separated, default empty = auth off), `RATE_LIMIT_REQUESTS=10`, `RATE_LIMIT_WINDOW_SECONDS=60` (`0` = no limit). `parse_api_keys` refuses keys under 16 characters **at startup**, and the error message doesn't include the key
+- [x] `app/api/security.py` (no new packages):
+  - `authorize` dependency on `POST /document-check` only (`dependencies=[Depends(authorize)]`); `GET /` stays open
+  - Key in the `X-API-Key` header (`fastapi.security.APIKeyHeader`, so `/docs` gets an Authorize button). Compared with `hmac.compare_digest` (constant time). Missing or wrong → `401 {"detail": "missing or invalid API key"}` + `WWW-Authenticate: APIKey`. The 401 is logged with the client IP, never the key
+  - `RateLimiter`: sliding window per client, in memory. The client is the API key (stored as a SHA-256 prefix, never the key itself) or, with auth off, the client IP. Over the limit → `429 {"detail": "too many requests, try again later"}` + `Retry-After` (seconds until the oldest request leaves the window). Idle clients are dropped once there are more than 10,000, so memory can't grow without limit
+  - `app/main.py` puts `api_keys` and `rate_limiter` on `app.state` at import time (not in lifespan), so they apply to tests that call the app directly too
+- **Decisions:**
+  - **Auth is off by default** (empty `API_KEYS`), because the service runs on localhost; the README says to set keys before exposing it
+  - **Rate limiting is on by default** (10 per minute). A request of up to 50 documents takes minutes, so 10 requests a minute is already generous
+  - **Auth and the rate limit run before body validation**, so an unauthenticated caller learns nothing and costs nothing. **Exception, accepted:** a body that isn't JSON at all gets `422 json_invalid` first, because FastAPI parses JSON before dependencies run. That 422 echoes nothing and costs nothing
+  - `401`s don't use up anyone's budget. **`X-Forwarded-For` is ignored** (any caller can forge it): behind a proxy, use keys or limit at the proxy
+  - Per-process limiter: fine for one uvicorn worker (documented)
+- [x] **Tested with `python -m scripts.test_security`: 33/33 pass** (no Ollama)
+  - Limiter (fake clock): 3 allowed then refused with retry-after 6 s; separate clients; allowed again after the window; true sliding window (t=0 expired at t=11, t=9 not); idle clients forgotten past 10,000
+  - Config: empty / `" , ,"` → auth off; keys trimmed; a 9-character key → `ValueError` without the key in the message
+  - Auth off → 200 with no key. Auth on: no key, wrong key, different case, a prefix of a valid key and an empty key → 401 with `WWW-Authenticate`; key A and key B → 200; rejected requests never reached the processor
+  - No key + invalid body → **401** (not 422); no key + broken JSON → 422 `json_invalid`, nothing echoed; valid key + invalid body → 422; `GET /` needs no key; OpenAPI has the `X-API-Key` scheme and 401/429
+  - Rate limit 2/min: key A 200, 200, 429; `Retry-After: 40` after 20 s; key B has its own budget; five 401s don't use up key B's budget; key A allowed again after the window
+  - Auth off: per-IP limit, and `X-Forwarded-For` doesn't get around it; a different IP has its own budget
+  - Keys never appear in the logs; rate-limit log lines show `key:<hash>`
+- [x] **Real server** (uvicorn, random 43-character key, limit 2/60 s): no key → 401; wrong key → 401; valid → 200, 200, then **429 with `retry-after: 60`**; `GET /` → 200; **key found 0 times in the server log**. `API_KEYS=too-short` → uvicorn refuses to start with `ValueError: API_KEYS: every key must be at least 16 characters`
+- [x] `test_hardening` turns the limiter off (it sends more than 10 requests). Regression: `test_hardening` 32/32, `test_grouping` 13/13, `test_pipelines` 27/27, `test_concurrency` 25/25, `test_pdf` 11/11, `test_downloader` 24/24, `test_extraction --offline` 46/46, `test_document_check` **25/25** (through the real app with the default limiter on)
+
 ---
 
 ## 6. File map (what exists now)
@@ -506,7 +530,9 @@ app/main.py                    FastAPI app, lifespan (shared clients), logging, 
 app/config.py                  Settings from .env (get_settings)
 app/services/ollama.py         OllamaClient.generate_structured -> validated Pydantic model
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
-app/api/document_check.py      POST /document-check -> list[OwnerResult]; 503 on ModelUnavailableError
+app/api/document_check.py      POST /document-check -> list[OwnerResult]; 503 on ModelUnavailableError; authorize dependency
+app/api/security.py           optional X-API-Key auth + RateLimiter (sliding window per key / IP) - Stage 15
+scripts/test_security.py       33 offline auth + rate-limit checks
 app/utils/url_safety.py        SSRF check: resolve_public_ip(url)
 app/utils/workspace.py         request_workspace(): private temp dir, always deleted
 app/services/downloader.py     DocumentDownloader.download(url, dest_dir, name)
@@ -549,12 +575,12 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: Stages 1–14 are done, tested and pushed.** The user asked (2026-09-28) to do all 5 optional next steps, as Stages 13–17, one at a time, each tested, recorded here and pushed:
+**Status: Stages 1–15 are done, tested and pushed.** The user asked (2026-09-28) to do all 5 optional next steps, as Stages 13–17, one at a time, each tested, recorded here and pushed:
 
 - [x] **Stage 13:** realistic documents, multi-page extraction, DPI re-check (done)
 - [x] **Stage 14:** PAN card (`panCard`) added through the registry, with no API changes (done)
-- [ ] **Stage 15:** optional API-key authentication and rate limiting (no new packages)
+- [x] **Stage 15:** optional API-key authentication and rate limiting (done)
 - [ ] **Stage 16:** `brew upgrade ollama`, then check whether qwen3-vl now runs in parallel, and re-run `benchmark_concurrency`
 - [ ] **Stage 17:** convert the `scripts/test_*.py` checks to pytest. **The user approved the extra package** by asking for all 5 steps; keep it in a separate dev-only requirements file so the runtime stack stays unchanged
 
-**Next action:** Stage 15.
+**Next action:** Stage 16.

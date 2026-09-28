@@ -7,6 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.api.document_check import router as document_check_router
+from app.api.security import RateLimiter
 from app.config import get_settings
 from app.pipelines.registry import PipelineRegistry
 from app.services.classifier import DocumentClassifier
@@ -45,6 +46,12 @@ app = FastAPI(
 )
 
 app.include_router(document_check_router)
+# Read by app/api/security.py. Set here, not in lifespan, so they also apply when tests call the app directly.
+app.state.api_keys = settings.api_keys
+app.state.rate_limiter = (
+    RateLimiter(settings.rate_limit_requests, settings.rate_limit_window_seconds)
+    if settings.rate_limit_requests > 0 else None
+)
 
 
 @app.exception_handler(RequestValidationError)

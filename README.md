@@ -12,7 +12,7 @@ All inference runs on your own machine. Documents are never sent to a third-part
 
 ### `POST /document-check`
 
-**Request:** 10 to 50 `http`/`https` URLs of PDF, PNG or JPG/JPEG documents.
+**Request:** 10 to 50 `http`/`https` URLs of PDF, PNG or JPG/JPEG documents. If the server sets `API_KEYS`, send one of them in the `X-API-Key` header.
 
 ```json
 { "documentUrls": ["https://example.com/doc1.pdf", "https://example.com/doc2.png", "... 10 to 50 URLs"] }
@@ -69,6 +69,8 @@ All inference runs on your own machine. Documents are never sent to a third-part
 | Status | When | Body |
 |---|---|---|
 | `422` | Fewer than 10 or more than 50 URLs, a value that isn't an `http(s)` URL, a missing `documentUrls`, any extra field, or invalid JSON | `{"detail": [{"type": "too_short", "loc": ["body", "documentUrls"], "msg": "..."}]}`. **The submitted values are never echoed back** (FastAPI's default `input`/`ctx` are removed), because URLs can contain access tokens |
+| `401` | `API_KEYS` is set and the `X-API-Key` header is missing or wrong. Checked before the body is validated (only a body that isn't JSON at all gets its `422` first) | `{"detail": "missing or invalid API key"}` + `WWW-Authenticate: APIKey` |
+| `429` | The client made more than `RATE_LIMIT_REQUESTS` requests in `RATE_LIMIT_WINDOW_SECONDS` | `{"detail": "too many requests, try again later"}` + `Retry-After: <seconds>` |
 | `503` | The model (Ollama) is unreachable or not pulled. This is checked **before** anything is downloaded, with a 5 s timeout | `{"detail": "document model is not available, try again later"}` |
 | `500` | An unexpected server error | `{"detail": "internal error"}`. Only the error type is logged, never its message |
 
@@ -158,6 +160,13 @@ POST /document-check
   - At most `MAX_PDF_PAGES` pages are rendered, and each page is capped at 4000 px on its longest side, so a crafted PDF can't exhaust memory.
   - Password-protected and unreadable PDFs are rejected.
   - MuPDF's own terminal messages are switched off, because they could contain document text.
+- **Authentication (optional)** (`app/api/security.py`):
+  - Set `API_KEYS` (comma-separated, each at least 16 characters; the server refuses to start otherwise) and every `POST /document-check` must send one in `X-API-Key`. Empty `API_KEYS` means no authentication, which is fine only on localhost.
+  - Keys are compared in constant time and never logged. `GET /` (health) needs no key.
+- **Rate limiting:**
+  - At most `RATE_LIMIT_REQUESTS` requests per `RATE_LIMIT_WINDOW_SECONDS` (default 10 per 60 s, sliding window) for each client: per API key, or per client IP when there are no keys. `0` turns it off. Requests rejected with `401` don't count.
+  - `X-Forwarded-For` is ignored, because any caller can set it. Behind a reverse proxy every request comes from the proxy's IP, so use API keys or rate-limit at the proxy.
+  - The limiter lives in memory, so it's per server process: run a single uvicorn worker, or limit at a proxy.
 - **Logging:**
   - Logs never include document contents, extracted values, owner names or model output. They record the host, file type, size, page count, model timing and document index.
   - httpx's request logging is turned down to WARNING, because it would log full URLs and any access tokens in them.
@@ -226,6 +235,9 @@ Use the `-instruct` models. The thinking variant ignores `think: false` and was 
 | `MAX_PDF_PAGES` | `10` | Pages rendered per PDF; the rest are skipped |
 | `MAX_CONCURRENT_DOCUMENTS` | `2` | Documents processed at once, **shared by all requests** |
 | `MODEL_PARALLEL_REQUESTS` | `1` | Documents in the model at once. Set it to what Ollama really runs in parallel (1 for qwen3-vl on Ollama 0.14) |
+| `API_KEYS` | empty | Comma-separated API keys (16+ characters each) for `X-API-Key`. Empty = no authentication. Make one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
+| `RATE_LIMIT_REQUESTS` | `10` | Requests per client per window; `0` = no limit |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window |
 
 ## Running
 
@@ -239,6 +251,7 @@ uvicorn app.main:app --reload
 - Example (10+ public URLs required):
   ```zsh
   curl -X POST http://127.0.0.1:8000/document-check -H 'content-type: application/json' \
+       -H "X-API-Key: $API_KEY" \
        -d '{"documentUrls": ["https://.../1.pdf", "...", "https://.../10.png"]}'
   ```
 
@@ -255,6 +268,7 @@ Every test uses **fake** documents made by `python -m scripts.make_sample_docume
 | `python -m scripts.test_grouping` | no | Group by owner (13) |
 | `python -m scripts.test_pipelines` | no | Pipeline base class, registry, extra pages only when needed (27) |
 | `python -m scripts.test_concurrency` | no | Concurrency limits, order, failure isolation, cancellation (25) |
+| `python -m scripts.test_security` | no | API keys, rate limiting, auth before validation (33) |
 | `python -m scripts.test_hardening` | no | 422 without input, 503, safe 500, readiness check, context-window guard (32) |
 | `python -m scripts.test_extraction --offline` | no | Formats and schemas (46) |
 | `python -m scripts.test_classifier` | yes | Name cross-check + classification of 9 samples + errors (28) |
@@ -289,3 +303,4 @@ These documents contain sensitive personal data. Only process documents you have
 - [x] 12. Hardening: 422 without the submitted input, 503 when the model is down, safe 500s, logging checks
 - [x] 13. Realistic documents, extra pages only when needed, context-window guard, DPI re-check
 - [x] 14. PAN card type added through the registry (no API changes)
+- [x] 15. Optional API-key authentication and per-client rate limiting

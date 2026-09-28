@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.api.security import authorize
 from app.schemas.request import DocumentCheckRequest
 from app.schemas.response import OwnerResult
 from app.services.document_processor import DocumentProcessor, ModelUnavailableError
@@ -15,7 +16,12 @@ def get_processor(request: Request) -> DocumentProcessor:
 @router.post(
     "/document-check",
     response_model=list[OwnerResult],
-    responses={503: {"description": "The document model (Ollama) is not available; nothing was downloaded."}},
+    dependencies=[Depends(authorize)],
+    responses={
+        401: {"description": "Missing or invalid X-API-Key (only when the server sets API_KEYS)."},
+        429: {"description": "Rate limit reached; see the Retry-After header (seconds)."},
+        503: {"description": "The document model (Ollama) is not available; nothing was downloaded."},
+    },
 )
 async def document_check(
     request: DocumentCheckRequest,
