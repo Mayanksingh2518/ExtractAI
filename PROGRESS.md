@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (Stage 18 done; Stage 19 frontend next)_
+_Last updated: 2026-09-28 (all 19 stages done)_
 
 ---
 
@@ -565,6 +565,26 @@ Items are ticked only once they have been **built and tested**.
   - Real server (uvicorn + curl): passport, PAN card, receipt → JOHN DOE / SARA LEE / no owner in 41 s; **120 MB upload → 413 in 2 ms, 0 bytes sent**; JSON → 415; file name 0 times in the log; no temp folders left
   - Regression: `pytest` **198 passed** (offline)
 
+### Stage 19: Web page ✅
+- [x] `app/static/index.html`, `style.css`, `app.js`, `favicon.svg`: plain HTML/CSS/JS (no framework, no build step), mounted at **`/ui/`** with `StaticFiles(html=True)` in `app/main.py` (`/ui` → 307 → `/ui/`)
+  - Tabs **Upload files** (drag and drop or choose, file list with sizes and Remove, warning over 20 MB) and **Document URLs** (textarea, live count); client-side checks (1–50 files, 100 MB total; 10–50 http(s) URLs) before sending
+  - API key field (collapsed): kept in memory, or `sessionStorage` if "Remember for this browser tab" is ticked. **Decision: never `localStorage`**
+  - Progress line with elapsed seconds and "usually 15–20 s per document"; **Cancel** (`AbortController`)
+  - Results: summary (documents, owners, problems, seconds), one card per owner (`No owner found` for null), per document: type badge, name, `#n · file name or URL host` (the file name only ever lives in the browser), field table with friendly labels (`not visible` for null), error box; **Copy JSON** / **Download JSON**
+  - Plain-language errors for 401, 429 (with `Retry-After`), 503, 413, 422, other statuses and "server offline"; server status pill from `GET /`
+  - Light/dark via `prefers-color-scheme`, focus outlines, arrow keys between tabs, one-column layout under 600 px
+- [x] **Security decisions:**
+  - Everything from the server (including model output) is rendered with `textContent` / `createElement`, **never `innerHTML`**
+  - `/ui` responses get `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`. So no inline scripts, styles or CDNs in the page
+- [x] **Tested:**
+  - `tests/test_ui.py` **11 passed**: redirect; the 4 files served with the right types and all headers; `../` and `%2e%2e` traversal and a missing file → 404; API routes don't get UI headers; `app.js` contains no `.innerHTML` / `.outerHTML` / `insertAdjacentHTML` / `document.write` / `eval(` / `new Function` (**a deliberately added `innerHTML` line made it fail**); `index.html` has no inline script, style, event handler or external file
+  - **Driven in headless Chrome** (scratchpad script over the DevTools protocol, using the `websockets` package that comes with uvicorn): status pill "Server online"; URL tab with 2 URLs → "Enter 10 to 50 URLs (you have 2)"; empty upload → "Choose at least one file"; **passport + PAN card + tax return uploaded → 3 documents, owners JOHN DOE (Passport, Tax return) and SARA LEE (PAN card) in 23 s**; dark mode and 390 px phone width checked by screenshot, no horizontal scroll
+  - **XSS check:** rendering a response with `<img onerror>`, `<script>`, `<svg onload>` in the owner, name, field, error and source label → 0 elements created, nothing ran, the owner shown as literal text
+  - Error states against extra servers: `API_KEYS` + limit 1 → 401 message, then with the key → results, then 429 "Try again in 59 seconds"; Ollama down → 503 message; the key appeared 0 times in the server log
+  - **Console: no JS errors and no CSP violations.** The only entries are the browser logging the deliberate 401/429/503 responses and Chrome's "password field is not in a form" hint (harmless: the key is never submitted as a form)
+  - `docs/screenshot.png` (light mode, 4 fake documents, 3 owners) added to the README
+  - Regression: `pytest` **209 passed** (offline)
+
 ---
 
 ## 6. File map (what exists now)
@@ -573,6 +593,8 @@ Items are ticked only once they have been **built and tested**.
 app/main.py                    FastAPI app, lifespan (shared clients), logging, 422 handler, 500 middleware, GET /; api_keys + rate_limiter on app.state
 app/config.py                  Settings from .env (get_settings, parse_api_keys)
 app/api/document_check.py      POST /document-check (URLs) and POST /document-check/upload (1-50 files, body parsed after all checks)
+app/static/                    the web page at /ui/: index.html, style.css, app.js (textContent only), favicon.svg
+docs/screenshot.png            README screenshot (fake documents)
 app/services/uploads.py        save_upload(): uploaded file -> workspace, size cap, type from magic bytes
 app/api/security.py            optional X-API-Key auth + RateLimiter (sliding window per key / IP)
 app/schemas/request.py         DocumentCheckRequest (10-50 http(s) URLs)
@@ -615,16 +637,12 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: Stages 1–18 are done, tested and pushed. Stage 19 (the web page) is next.** The brief (Stages 1–12) plus the 5 optional steps the user asked for on 2026-09-28:
-- **13:** realistic fake documents; extra pages only when page 1 leaves fields null (Aadhaar 2, tax return 3); `taxDue` = balance payable; context-window guard; DPI 100 kept (150: same accuracy, 2× slower)
-- **14:** `panCard` added through the registry with no API changes
-- **15:** optional `X-API-Key` auth and per-client rate limiting (on by default: 10/min)
-- **16:** Ollama 0.34.4: qwen3-vl **still** can't run in parallel; 5.9 GB instead of 7.4 GB; benchmark about 200 s vs 145 s before, cause not isolated
-- **17:** pytest (dev-only): `pytest` (offline, 16 s) / `caffeinate -i pytest -m ""` (everything, about 10 min)
+**Status: all 19 stages are done, tested and pushed.** The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
 
-**Next action: Stage 19**, the frontend: `app/static/` (index.html, style.css, app.js) served at `/ui` with FastAPI's StaticFiles. URL tab + upload tab, API key field, progress timer, results grouped by owner, errors shown clearly; data rendered with `textContent` only (no `innerHTML`), plus a Content-Security-Policy.
+**To use it:** `source .venv/bin/activate && uvicorn app.main:app`, then open http://127.0.0.1:8000/ui/
 
-**Other possible next steps (ask the user):**
+**Possible next steps (ask the user):**
 1. Re-run `caffeinate -i python -u -m scripts.benchmark_concurrency 2` on a **cold Mac on mains power**, to settle whether Ollama 0.34.4 is slower than 0.14.1 (Stage 16).
-2. Test with real-world scans (only with documents the user has the right to process), and adjust DPI / `max_pages` if needed.
-3. Add a driving licence type the same way as the PAN card (Stage 14).
+2. Live progress on the page (per-document status as each finishes) would need a streaming endpoint (e.g. Server-Sent Events); today the page waits for the whole batch.
+3. Test with real-world scans (only documents the user has the right to process), and adjust DPI / `max_pages` if needed.
+4. Add a driving licence type the same way as the PAN card (Stage 14).

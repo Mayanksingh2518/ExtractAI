@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExtractAI</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>ExtractAI</h1>
+      <p>Classify passports, Aadhaar cards, PAN cards and tax returns, and extract their data, with a local AI model.</p>
+    </div>
+    <span id="server-status" class="pill" role="status">Checking server…</span>
+  </header>
+
+  <main>
+    <section class="panel" aria-labelledby="input-heading">
+      <h2 id="input-heading" class="visually-hidden">Documents</h2>
+
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-upload" aria-controls="panel-upload" aria-selected="true">Upload files</button>
+        <button type="button" role="tab" id="tab-urls" aria-controls="panel-urls" aria-selected="false" tabindex="-1">Document URLs</button>
+      </div>
+
+      <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload">
+        <label id="drop-zone" class="drop-zone" for="file-input">
+          <input id="file-input" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg">
+          <strong>Drop files here</strong> or click to choose
+          <span class="hint">PDF, PNG or JPG · 1 to 50 files · up to 20 MB each, 100 MB in total</span>
+        </label>
+        <ul id="file-list" class="file-list"></ul>
+      </div>
+
+      <div id="panel-urls" role="tabpanel" aria-labelledby="tab-urls" hidden>
+        <label for="url-input" class="field-label">One URL per line (10 to 50, public http/https links to PDF, PNG or JPG)</label>
+        <textarea id="url-input" rows="8" spellcheck="false" placeholder="https://example.com/passport.pdf"></textarea>
+        <p id="url-count" class="hint">0 URLs</p>
+      </div>
+
+      <details class="api-key">
+        <summary>API key (only if the server requires one)</summary>
+        <label for="api-key" class="field-label">X-API-Key</label>
+        <input id="api-key" type="password" autocomplete="off" spellcheck="false">
+        <label class="check"><input id="remember-key" type="checkbox"> Remember for this browser tab</label>
+      </details>
+
+      <div class="actions">
+        <button id="submit" type="button" class="primary">Extract data</button>
+        <button id="cancel" type="button" hidden>Cancel</button>
+        <span id="progress" class="hint" role="status" aria-live="polite"></span>
+      </div>
+      <p id="form-error" class="error" role="alert" hidden></p>
+    </section>
+
+    <section id="results" class="results" aria-live="polite" hidden>
+      <div class="results-head">
+        <h2>Results</h2>
+        <p id="summary" class="hint"></p>
+        <div class="results-actions">
+          <button id="copy-json" type="button">Copy JSON</button>
+          <button id="download-json" type="button">Download JSON</button>
+        </div>
+      </div>
+      <div id="owners"></div>
+    </section>
+  </main>
+
+  <footer class="foot">Documents are processed on this server by a local model and deleted after each request.</footer>
+</body>
+</html>

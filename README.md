@@ -1,10 +1,14 @@
 # ExtractAI: Document Intelligence API
 
-A FastAPI service that takes a batch of document URLs, downloads each document safely, classifies it with a **local** vision LLM (Ollama + Qwen3-VL), groups the documents by owner, and extracts structured data with a pipeline chosen for each document type.
+A FastAPI service, with a built-in web page, that takes a batch of documents (URLs or uploaded files), downloads each one safely, classifies it with a **local** vision LLM (Ollama + Qwen3-VL), groups the documents by owner, and extracts structured data with a pipeline chosen for each document type.
 
 All inference runs on your own machine. Documents are never sent to a third-party AI service.
 
-> **Status:** all 12 stages are done and tested. [PROGRESS.md](PROGRESS.md) has every decision and test result.
+> **Status:** all 19 stages are done and tested (see [Build stages](#build-stages)). [PROGRESS.md](PROGRESS.md) has every decision and test result.
+
+![The ExtractAI web page: four uploaded fake documents grouped by owner, with the extracted fields](docs/screenshot.png)
+
+**Web page:** start the server (see [Running](#running)) and open **http://127.0.0.1:8000/ui/**. Upload files or paste URLs, and the results appear grouped by owner, with a Copy/Download JSON button.
 
 ---
 
@@ -155,6 +159,17 @@ POST /document-check
 
 ---
 
+## Web page
+
+Plain HTML, CSS and JavaScript in `app/static/` (no framework, no build step), served by FastAPI at `/ui/`.
+
+- **Upload files** (drag and drop or choose; 1–50 PDF/PNG/JPG) or **Document URLs** (one per line, 10–50). The page checks counts and sizes before sending; the server checks everything again.
+- **Results** grouped by owner: a badge per document type, the document name, which file or host it came from, each extracted field (`not visible` when null), and any per-document error. **Copy JSON** / **Download JSON** give the raw API response.
+- **Errors** are explained in plain words: API key needed (401), rate limit with the wait time (429), model not running (503), upload too large (413), invalid input (422), server offline.
+- **API key** field for servers with `API_KEYS`. It's kept in memory, or in `sessionStorage` (this tab only) if you tick "Remember"; never in `localStorage`.
+- Light and dark themes (follows the system), keyboard-usable tabs, and a phone-width layout.
+- **Security:** everything from the server, including model output, is shown with `textContent`, never `innerHTML`, so text in a document can't run as code. `/ui/` is sent with a strict Content-Security-Policy (only the page's own files, only same-origin requests, no framing), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
+
 ## Constraints and limits
 
 ### Design rules
@@ -269,6 +284,7 @@ source .venv/bin/activate
 uvicorn app.main:app --reload
 ```
 
+- **Web page: http://127.0.0.1:8000/ui/**
 - Health check: `curl http://127.0.0.1:8000/` returns `{"status":"ok","service":"document-intelligence-api"}`
 - Interactive docs: http://127.0.0.1:8000/docs
 - Example (10+ public URLs required):
@@ -304,6 +320,7 @@ Model tests are skipped automatically if Ollama or the model isn't available.
 | `tests/test_concurrency.py` | | Concurrency limits, model lock, order, failure isolation, cancellation |
 | `tests/test_hardening.py` | | 422 without input, 503, safe 500, readiness check, context-window guard |
 | `tests/test_security.py` | | API keys, rate limiting, auth before validation |
+| `tests/test_ui.py` | | Web page served at `/ui/`, security headers, no path traversal, no `innerHTML` or inline code |
 | `tests/test_upload.py` | (one `model`) | Upload endpoint: limits checked before reading, bad files fail alone, names never echoed |
 | `tests/test_classifier.py` | (some `model`) | Name cross-check; classification of 9 samples; errors |
 | `tests/test_extraction.py` | `model` | Exact values extracted from 9 samples |
@@ -352,3 +369,4 @@ The project was built one tested stage at a time. Stages 1–12 cover the origin
 | 16 | Ollama upgrade | Ollama 0.14.1 → 0.34.4 | qwen3-vl still can't run in parallel; memory 7.4 → 5.9 GB. Benchmark about 200 s vs 145 s, measured on battery after a day of load, so the cause isn't isolated yet |
 | 17 | pytest | Old test scripts converted to `tests/` (pytest is dev-only); `model` and `network` markers | `pytest`: 177 offline tests in 16 s. `pytest -m ""`: **251 passed**. Deliberately broken code made the tests fail |
 | 18 | File upload | `POST /document-check/upload` (1–50 files, multipart); the processor fetches each document by download or by saving the upload, and the rest of the flow is shared | 22 tests; a real 120 MB upload refused with 413 before a byte was sent; file names logged 0 times |
+| 19 | Web page | Plain HTML/CSS/JS at `/ui/`: upload and URL tabs, API key field, progress timer, results grouped by owner, JSON export, light/dark, phone layout; strict CSP | 11 tests; driven in headless Chrome: real uploads grouped correctly, 401/429/503 explained, a hostile owner name shown as text (no script ran), no CSP violations, no horizontal scroll at 390 px |

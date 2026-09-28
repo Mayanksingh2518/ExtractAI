@@ -1,10 +1,12 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.document_check import router as document_check_router
 from app.api.security import RateLimiter
@@ -46,6 +48,8 @@ app = FastAPI(
 )
 
 app.include_router(document_check_router)
+# The web page (plain HTML/CSS/JS, no build step) at /ui/.
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
 # Read by app/api/security.py. Set here, not in lifespan, so they also apply when tests call the app directly.
 app.state.api_keys = settings.api_keys
 app.state.rate_limiter = (
@@ -59,6 +63,23 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     """422 without `input` or `ctx`: FastAPI's default echoes the submitted values (URLs may hold tokens)."""
     errors = [{"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()]
     return JSONResponse(status_code=422, content={"detail": errors})
+
+
+# The page only loads its own files and only talks to this server.
+UI_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+@app.middleware("http")
+async def ui_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/ui"):
+        response.headers.update(UI_HEADERS)
+    return response
 
 
 @app.middleware("http")
