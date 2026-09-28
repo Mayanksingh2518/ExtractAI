@@ -608,7 +608,8 @@ Items are ticked only once they have been **built and tested**.
   - **Google Sheets: append rows** node (4.7, OAuth2, append, auto-map by column name) added **disabled**, with a note on what to select. A disabled node passes items through, so the chain keeps working
   - Order: Rows for Sheets → Google Sheets (off) → Save to n8n table → Summary. The table node reads from `$('Rows for Sheets')`, so it works whether Sheets is on or off
   - **Tested:** passport + Aadhaar → result page *"JOHN DOE: Passport | MARIA DOE: Aadhaar"*, **2 rows in the n8n table** (Aadhaar `XXXX-XXXX-0123`), CSV download works. **Bug found and fixed:** "Processed at" was UTC (`new Date().toISOString()`); now `$now.toFormat(...)` in n8n's timezone (Asia/Kolkata), checked: 23:30 matched the clock. Test executions deleted; the 3 fake test rows were left in the table as examples
-- [ ] **Google Sheets (user):** create the Google Cloud OAuth client, add the credential in n8n, pick the sheet in the node and enable it (steps in README "n8n workflow"); then test one upload
+- [x] The user created a Google Sheet (2026-09-28). In the **local** n8n workflow, the *Google Sheets: append rows* node now points at it (first tab, gid 0); still disabled. **The sheet URL is deliberately not in the repo**: `n8n/extractai-workflow.json` stays generic
+- [ ] **Google Sheets (user):** paste the 9 column names into row 1, create the Google Cloud OAuth client, add the *Google Sheets OAuth2 API* credential in n8n, select it in the node and enable it (steps in README "n8n workflow"); then run one test upload and check the rows appear in the sheet
 
 ---
 
