@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+# Ollama cut a 10,119-token prompt to 8,093 with num_ctx 8192, so a prompt this close to the
+# limit is treated as cut off.
+CONTEXT_MARGIN_TOKENS = 256
+
 
 class OllamaError(Exception):
     """Raised when Ollama is unreachable or returns an unusable answer.
@@ -109,6 +113,12 @@ class OllamaClient:
             body = response.json()
         except ValueError as exc:
             raise OllamaError("Ollama returned a non-JSON response") from exc
+
+        # A prompt larger than num_ctx is cut down silently (still HTTP 200), and the answer is then
+        # based on part of the input (Stage 13: 5 pages at 150 DPI -> '15.' instead of '15,570').
+        if body.get("prompt_eval_count", 0) >= self._num_ctx - CONTEXT_MARGIN_TOKENS:
+            raise OllamaError(f"input filled the model's context window (num_ctx={self._num_ctx}); "
+                              "send fewer or smaller pages, or raise OLLAMA_NUM_CTX")
 
         # Only message.content is used; message.thinking (if any) is ignored and never logged.
         content = body.get("message", {}).get("content", "")

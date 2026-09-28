@@ -15,7 +15,7 @@ from app.main import app
 from app.schemas.classification import Classification, DocumentType
 from app.services.document_processor import DocumentProcessor
 from app.services.downloader import DownloadedDocument, FileKind
-from app.services.ollama import OllamaClient
+from app.services.ollama import OllamaClient, OllamaError
 
 SECRET = "SECRET123"
 results: list[bool] = []
@@ -173,6 +173,26 @@ async def main() -> None:
     await ollama.is_model_available()
     await ollama.aclose()
     check("readiness check uses a 5 s timeout (not the 180 s model timeout)", seen.get("timeout") == 5.0, str(seen))
+
+    # --- Stage 13: a prompt that filled the context window is an error, not an answer ---
+    def chat(prompt_tokens: int):
+        return lambda req: httpx.Response(200, json={"message": {"content": '{"documentName": "Receipt", '
+            '"documentType": "unknown", "ownerName": null}'}, "prompt_eval_count": prompt_tokens})
+    num_ctx = settings.ollama_num_ctx
+    for label, tokens, want_error in [
+        ("prompt well inside num_ctx -> answer", num_ctx // 2, False),
+        ("prompt just under the margin -> answer", num_ctx - 257, False),
+        ("prompt cut to num_ctx - 99 (as observed) -> OllamaError", num_ctx - 99, True),
+        ("prompt at num_ctx -> OllamaError", num_ctx, True),
+        ("no prompt_eval_count reported -> answer", 0, False),
+    ]:
+        ollama = client_with(chat(tokens))
+        try:
+            await ollama.generate_structured(Classification, "classify", [])
+            check(f"context guard: {label}", not want_error)
+        except OllamaError as exc:
+            check(f"context guard: {label}", want_error and "context window" in str(exc), str(exc))
+        await ollama.aclose()
 
     print(f"\n{sum(results)}/{len(results)} passed")
 

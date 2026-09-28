@@ -56,7 +56,10 @@ class TaxReturnData(BaseModel):
     taxPayerName: str | None = Field(description=f"Full name of the taxpayer (assessee). {AS_PRINTED}")
     totalIncome: str | None = Field(description=f"The amount on the 'Total Income' line (not gross total income). {AS_PRINTED}")
     taxPaid: str | None = Field(description=f"The amount on the 'Taxes Paid' line. {AS_PRINTED}")
-    taxDue: str | None = Field(description=f"The amount on the 'Tax Payable' / 'Tax Due' line. {AS_PRINTED}")
+    taxDue: str | None = Field(
+        description="Balance still payable after taxes paid ('Amount payable' / 'Tax Payable / Due' line), "
+        f"not the total tax liability. {AS_PRINTED}"
+    )
 
     @field_validator("assessmentYear")
     @classmethod

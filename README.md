@@ -117,7 +117,8 @@ POST /document-check
        download safely -> PDF pages to PNG (images as they are)
        -> [model lock: MODEL_PARALLEL_REQUESTS]
             classify page 1 -> documentType, documentName, ownerName
-            extract with the pipeline for that type (registry lookup)
+            extract with the pipeline for that type (registry lookup):
+              page 1 first; if fields are still null, again with up to max_pages pages
   -> group by owner -> JSON response
 ```
 
@@ -164,8 +165,9 @@ POST /document-check
 - **About 14.5 s per document** (10 documents in 145 s) with the shared-prompt speed-up, compared with about 22 s (216–221 s) without it. Each document needs 2 model calls. A fanless laptop gets about 25% slower under sustained load.
 - **A request can take minutes:** 10 documents take about 2–4 minutes and 50 documents 10+ minutes, so clients need a long timeout. There is no overall time limit on a request yet.
 - **Ollama 0.14.1 can't run qwen3-vl requests in parallel.** It ignores `OLLAMA_NUM_PARALLEL` for this model and forces `Parallel:1`. `MAX_CONCURRENT_DOCUMENTS` above 1–2 therefore only lengthens Ollama's queue; it still limits load, and helps on machines where Ollama does run in parallel.
-- **Only page 1** is used for classification, and the built-in pipelines also send only page 1 (`max_pages = 1`). Each extra page costs up to about 2,000 tokens, so keep `max_pages` at 3 or below, or raise `OLLAMA_NUM_CTX`.
-- **`PDF_RENDER_DPI=100`** read every number correctly on the test documents. Scans with small print may need 120–150, which makes each page slower (about 12 s at 100 DPI vs about 31–38 s at 150).
+- **Only page 1** is used for classification. Extraction also reads page 1 first, and only if fields are still `null` does it read again with up to `max_pages` pages (passport 1, Aadhaar 2 for a front/back scan, tax return 3 for a full ITR form), filling in only the missing fields. One-page documents and ITR-V acknowledgements take one extract call (about 3.5 s); a full ITR takes about 55 s.
+- Each page costs about 1,000 tokens at 100 DPI (up to about 2,000 at higher DPI). If the input fills the context window, Ollama cuts it **silently** and answers from part of it; the app detects this (`prompt_eval_count` within 256 tokens of `num_ctx`) and reports an error for that document instead. Keep `max_pages` × page tokens within `OLLAMA_NUM_CTX`.
+- **`PDF_RENDER_DPI=100`** read every value correctly, including the realistic samples: 6.5–8 pt print, a card scanned small on an A4 page, a tilted phone photo and a sideways scan. 150 DPI gave the same accuracy at about twice the time for PDFs, so raise it only if real documents show misreads.
 
 ### Known limitations
 
@@ -242,20 +244,21 @@ Because of SSRF protection, the API **cannot** fetch documents from `localhost` 
 
 ## Tests
 
-Every test uses **fake** documents made by `python -m scripts.make_sample_documents`, written to `documents/` (gitignored). Run long tests with `caffeinate -i` so the Mac doesn't sleep.
+Every test uses **fake** documents made by `python -m scripts.make_sample_documents` and `python -m scripts.make_realistic_documents`, written to `documents/` (gitignored). Run long tests with `caffeinate -i` so the Mac doesn't sleep.
 
 | Command | Needs Ollama | Checks |
 |---|---|---|
 | `python -m scripts.test_downloader` | no (internet) | Downloads, SSRF, limits, TLS (24) |
 | `python -m scripts.test_pdf` | no | PDF → image conversion (11) |
 | `python -m scripts.test_grouping` | no | Group by owner (13) |
-| `python -m scripts.test_pipelines` | no | Pipeline base class and registry (20) |
+| `python -m scripts.test_pipelines` | no | Pipeline base class, registry, extra pages only when needed (27) |
 | `python -m scripts.test_concurrency` | no | Concurrency limits, order, failure isolation, cancellation (25) |
-| `python -m scripts.test_hardening` | no | 422 without input, 503, safe 500, readiness check (27) |
+| `python -m scripts.test_hardening` | no | 422 without input, 503, safe 500, readiness check, context-window guard (32) |
 | `python -m scripts.test_extraction --offline` | no | Formats and schemas (39) |
 | `python -m scripts.test_classifier` | yes | Classification of 8 samples + errors (22) |
 | `python -m scripts.test_extraction` | yes | + extraction on the samples (47) |
 | `python -m scripts.test_document_check` | yes (+ internet) | Full endpoint, 13 URLs (25) |
+| `python -m scripts.test_realistic [--dpi N]` | yes | Harder realistic documents, field by field (6 documents, 32 fields) |
 | `python -m scripts.benchmark_concurrency 1 2 3` | yes | Speed and accuracy per concurrency level |
 
 **Tuning another machine:**

@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-27 (all stages done)_
+_Last updated: 2026-09-28 (Stage 13 done; Stages 14-17 in progress)_
 
 ---
 
@@ -459,6 +459,27 @@ Items are ticked only once they have been **built and tested**.
 - [x] Full regression: `test_downloader` 24/24, `test_pdf` 11/11, `test_grouping` 13/13, `test_pipelines` 20/20, `test_extraction --offline` 39/39, `test_concurrency` 25/25, `test_hardening` 27/27, `test_classifier` 22/22, `test_extraction` 47/47, `test_document_check` 25/25
 - [x] **Security check before pushing:** `git log --all --name-only` shows no `.env`, `documents/`, PDF or image files ever committed; only `.env.example` is tracked
 
+### Stage 13: Realistic documents, multi-page extraction, DPI re-check ✅
+- [x] `scripts/make_realistic_documents.py` writes 6 harder FAKE documents (`realistic_*`, all marked SPECIMEN) to `documents/`:
+  - `realistic_passport.png`: dense bilingual (Hindi/English) data page, 15 px labels, photo box, MRZ with real check digits, and decoys: file number, date of issue, place of issue (PRIYA ANJALI SHARMA, K4821937)
+  - `realistic_passport_photo.jpg`: another passport as a phone photo: 75% size, tilted 4°, on a desk, blurred, noisy, JPEG quality 55 (RAHUL VERMA, Z9053318)
+  - `realistic_passport_sideways.pdf`: the first passport scanned sideways (rotated 90°) into an A4 PDF
+  - `realistic_e_aadhaar.pdf`: digital e-Aadhaar letter in 6.5–8 pt print, with decoy enrolment number, 16-digit VID and masked mobile, plus the cut-out card front/back (Neha Kapoor)
+  - `realistic_aadhaar_card_scan.pdf`: 2 pages, a card scanned on A4 at 200 dpi, slightly tilted: **front on page 1, back (address) on page 2**. At 100 DPI the card is only about 330 px wide (Vikram Singh)
+  - `realistic_itr_full.pdf`: 5-page ITR-1 style form in 8 pt, with decoys: masked Aadhaar, acknowledgement no., Gross Total Income, "Tax payable on total income", "Total Tax, Fee and Interest", refund. **Page 1 has no amounts**: total income is on page 2, tax paid and amount payable on page 3 (ARJUN MEHTA, AY 2024-25)
+- [x] `scripts/test_realistic.py [--dpi N] [--pages type=N ...]`: classify + extract each document, report type, owner (name words in any order) and every field, with timings
+- [x] **Baseline (DPI 100, 1 page per pipeline): 4/6 documents, 28/32 fields.** Every value returned was right; the 4 misses were all `null` (no guessing): the card's address (page 2) and the ITR's 3 amounts (pages 2–3)
+- [x] **With `idCard=2 taxReturn=3`: 5/6, 31/32.** The last miss: `taxDue` was D9 "Total Tax, Fee and Interest" (1,25,572) instead of D11 "Amount payable" (15,570)
+- [x] **Fixes:**
+  - `taxDue` prompt and schema description now say: the balance still payable after taxes paid ("Amount payable", "Tax Payable / Due"), not the total tax liability and not the refund
+  - `AadhaarPipeline.max_pages = 2`, `TaxReturnPipeline.max_pages = 3`
+  - **Decision: page 1 first, more pages only if needed** (`BaseDocumentPipeline._generate`). Extract from page 1; if any field is `null` and the document has more pages, extract again with up to `max_pages` pages and fill in **only the missing fields** (page-1 values are never replaced). Extra pages cost about 15 s each, so one-page documents and ITR-V acknowledgements (everything on page 1) still take one call
+  - **Context-window guard in `app/services/ollama.py`.** Probe on the full ITR at 150 DPI: 3 pages → 6,083 prompt tokens, correct; **5 pages → Ollama silently cut the prompt to 8,093 tokens (num_ctx 8192), still HTTP 200, answer `'15.'`**; 5 pages with num_ctx 16384 → 10,119 tokens, correct. Now any response whose `prompt_eval_count` is within 256 tokens of `num_ctx` raises `OllamaError("input filled the model's context window ...")`
+- [x] **Result at DPI 100 with the fixes: 6/6 documents, 32/32 fields.** Single-page documents: extract about 3.5 s (unchanged); card scan 33 s and full ITR 55 s (second call with more pages)
+- [x] **DPI re-check at 150: also 6/6, 32/32, but PDFs about 2× slower** (classify 32–38 s vs 15–18 s; card scan extract 74 s vs 33 s; full ITR extract 123 s vs 55 s). Images (PNG/JPEG) are unaffected. **Decision: keep `PDF_RENDER_DPI=100`**. Even the card scanned on A4 (about 330 px wide at 100 DPI) and the 6.5–8 pt e-Aadhaar/ITR print were read correctly. Only raise DPI if real documents show misreads
+- [x] Offline tests: `test_pipelines` **27/27** (7 new: 2nd call only when a field is null and more pages exist; pages 1–3 sent; missing field filled, page-1 value kept; null everywhere stays null; 2 pages → 2 sent; one-page document or `max_pages=1` → no 2nd call; 2nd call failing → `ExtractionError`). `test_hardening` **32/32** (5 new context-guard checks: half of num_ctx and num_ctx − 257 → answer; num_ctx − 99 and num_ctx → `OllamaError`; no count reported → answer). `test_extraction --offline` 39/39
+- [x] Regression with the model: `test_extraction` **47/47** (the 3-page ITR-V sample still takes one call: everything is on page 1; the Aadhaar front with no address is a single image, so no 2nd call), `test_classifier` **22/22**, `test_document_check` **25/25**
+
 ---
 
 ## 6. File map (what exists now)
@@ -482,12 +503,12 @@ app/services/grouping.py       group_by_owner(items, owner_of) -> [OwnerGroup(ow
 scripts/test_grouping.py       13 offline grouping checks
 app/pipelines/base.py          BaseDocumentPipeline(ABC): extract(page_images), _generate helper, ExtractionError
 app/pipelines/registry.py      PipelineRegistry (get / extract / build) + PIPELINE_CLASSES
-scripts/test_pipelines.py      20 offline pipeline/registry checks
+scripts/test_pipelines.py      27 offline pipeline/registry checks (incl. page 1 first, more pages only when needed)
 app/utils/normalize.py         clean_text, to_iso_date, to_aadhaar_number, to_amount
 app/schemas/extraction.py      PassportData, AadhaarData (aadharNumber), TaxReturnData (assessmentYear)
 app/pipelines/passport.py      PassportPipeline      (document_type "passport")
-app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard")
-app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 1)
+app/pipelines/aadhaar.py       AadhaarPipeline       (document_type "idCard", max_pages 2)
+app/pipelines/tax_return.py    TaxReturnPipeline     (document_type "taxReturn", max_pages 3)
 scripts/test_extraction.py     39 offline format/schema checks + 8 model checks (--offline for Part A only)
 app/schemas/response.py        DocumentResult (+ sourceIndex, error) and OwnerResult
 app/services/document_processor.py   DocumentProcessor.process(urls): readiness check, documents concurrently (outer semaphore + model lock), then group
@@ -495,7 +516,9 @@ scripts/test_document_check.py 25 end-to-end checks (SampleDownloader serves doc
 scripts/test_concurrency.py    25 offline concurrency checks incl. the model lock (fakes)
 scripts/benchmark_concurrency.py   real-model benchmark: 10 fresh random documents per run, accuracy + ollama ps
 app/services/prompts.py        the ONE shared SYSTEM_PROMPT (cache reuse between classify and extract)
-scripts/test_hardening.py      27 offline checks: 422 without input, 503, safe 500, readiness check
+scripts/test_hardening.py      32 offline checks: 422 without input, 503, safe 500, readiness check, context-window guard
+scripts/make_realistic_documents.py   harder fake documents (realistic_*): dense passport, phone photo, sideways scan, e-Aadhaar, card scan front/back, 5-page ITR
+scripts/test_realistic.py      classify + extract the realistic documents field by field (--dpi, --pages overrides)
 app/{api,schemas,pipelines,utils}/__init__.py   empty, filled in by later stages
 scripts/make_sample_documents.py   writes fake passport (png, scan pdf, no-name), tax return pdf, aadhaar (+ front only, no address), driving licence, PAN card, receipt into documents/
 scripts/test_ollama.py         manual check of the Ollama service
@@ -508,11 +531,12 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: all 12 stages are done, tested and pushed.** `POST /document-check` downloads safely, classifies, groups by owner, extracts passport/Aadhaar/tax-return data, and returns the target JSON. It adds `sourceIndex` and `error` fields, rejects invalid input with a 422 that echoes nothing, and returns 503 if the model is down. About 14.5 s per document on the M4 (qwen3-vl can't run in parallel on Ollama 0.14.1).
+**Status: Stages 1–13 are done, tested and pushed.** The user asked (2026-09-28) to do all 5 optional next steps, as Stages 13–17, one at a time, each tested, recorded here and pushed:
 
-**Possible next steps (not required by the brief; ask the user):**
-1. Test on more realistic fake documents: small print, rotated or skewed scans, multi-page full ITR forms. Revisit `PDF_RENDER_DPI` (120–150) and tax return `max_pages` if needed.
-2. Add another document type through the registry (e.g. PAN card or driving licence) to show that the API code doesn't change.
-3. Proper test framework: the `scripts/test_*.py` files are plain scripts. Converting them to pytest would add a package, so ask first (the stack rule says no other packages).
-4. Re-run `benchmark_concurrency` after `brew upgrade ollama`, in case a newer Ollama supports parallel qwen3vl requests.
-5. Optional hardening: API authentication and rate limiting, if the service is ever exposed beyond localhost.
+- [x] **Stage 13:** realistic documents, multi-page extraction, DPI re-check (done)
+- [ ] **Stage 14:** add a new document type through the registry: **PAN card** (`panCard`), showing that `app/api/` and `document_processor.py` don't change
+- [ ] **Stage 15:** optional API-key authentication and rate limiting (no new packages)
+- [ ] **Stage 16:** `brew upgrade ollama`, then check whether qwen3-vl now runs in parallel, and re-run `benchmark_concurrency`
+- [ ] **Stage 17:** convert the `scripts/test_*.py` checks to pytest. **The user approved the extra package** by asking for all 5 steps; keep it in a separate dev-only requirements file so the runtime stack stays unchanged
+
+**Next action:** Stage 14.
