@@ -138,6 +138,51 @@ curl -X POST http://127.0.0.1:8000/document-check/upload \
 
 ---
 
+## Architecture diagram
+
+```mermaid
+flowchart LR
+    subgraph Entry
+        UI["Web page<br/>/ui"]
+        FORM["n8n form"]
+        CLIENT["API client"]
+    end
+    subgraph API["FastAPI"]
+        URLS["POST /document-check<br/>10–50 URLs"]
+        UPLOAD["POST /document-check/upload<br/>1–50 files"]
+        GATE{{"Security gate<br/>API key · rate limit · 503"}}
+    end
+    subgraph Processing["DocumentProcessor (2 documents at a time)"]
+        FETCH["Fetch<br/>SSRF-safe download or upload"]
+        PAGES["PDF → page images<br/>PyMuPDF, 100 DPI"]
+        CLASSIFY["Classify<br/>type · name · owner"]
+        REGISTRY["Pipeline registry"]
+        EXTRACT["Extract fields<br/>passport · Aadhaar · tax · PAN"]
+        NORMALIZE["Normalize<br/>dates · numbers · amounts"]
+        GROUP["Group by owner"]
+    end
+    OLLAMA[("Ollama · Qwen3-VL<br/>local vision model")]
+    RESPONSE["JSON response"]
+    subgraph Outputs
+        RESULTS["Results on the page"]
+        ROWS["n8n rows<br/>Aadhaar masked"]
+        TABLE[("n8n Data Table")]
+        SHEET[("Google Sheet<br/>via Apps Script")]
+        SUMMARY["Summary page"]
+    end
+
+    UI --> URLS & UPLOAD
+    FORM --> UPLOAD
+    CLIENT --> URLS & UPLOAD
+    URLS & UPLOAD --> GATE --> FETCH --> PAGES --> CLASSIFY --> REGISTRY --> EXTRACT --> NORMALIZE --> GROUP --> RESPONSE
+    CLASSIFY -. model call .-> OLLAMA
+    EXTRACT -. model call .-> OLLAMA
+    RESPONSE --> RESULTS
+    RESPONSE --> ROWS --> TABLE --> SHEET --> SUMMARY
+```
+
+**Interactive version:** open [`docs/architecture.html`](docs/architecture.html) in a browser (download it, or clone the repo): an n8n-style diagram where you can follow each path and click any step for what it does, which file it lives in, and how it was tested.
+
 ## How it works
 
 ```

@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<title>ExtractAI Flow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Deliberately dark-only: the page mirrors the n8n editor canvas. */
+  :root {
+    color-scheme: dark;
+    --ground: #17171b;
+    --canvas: #1d1d22;
+    --dot: #2c2c33;
+    --node: #2a2a30;
+    --node-edge: #3c3c45;
+    --panel: #222228;
+    --text: #ececef;
+    --muted: #9c9ca6;
+    --faint: #6c6c76;
+    --wire: #4a4a54;
+    --entry: #3ec8b4;
+    --api: #ff8a4c;
+    --process: #9b9cf8;
+    --model: #f0679e;
+    --output: #56c586;
+    --focus: #ffb78f;
+    --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--ground); color: var(--text); }
+  body { font: 14px/1.5 var(--sans); padding-inline: 16px; padding-block: 20px 28px; }
+  .wrap { max-width: 1400px; margin: 0 auto; display: grid; gap: 16px; }
+
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-end; justify-content: space-between; }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  .lede { margin: 4px 0 0; color: var(--muted); max-width: 68ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font: 500 13px var(--sans); color: var(--muted); background: var(--panel); border: 1px solid var(--node-edge);
+          border-radius: 999px; padding: 6px 12px; cursor: pointer; display: inline-flex; gap: 7px; align-items: center; }
+  .chip:hover { color: var(--text); }
+  .chip[aria-pressed="true"] { color: var(--text); border-color: var(--api); background: #2e2522; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); display: inline-block; }
+  .chip:focus-visible, .node:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+  .viewport { position: relative; height: 500px; border: 1px solid var(--node-edge); border-radius: 12px; overflow: auto; cursor: grab;
+              background-color: var(--canvas);
+              background-image: radial-gradient(var(--dot) 1.2px, transparent 1.2px); background-size: 20px 20px; }
+  .viewport.dragging { cursor: grabbing; user-select: none; }
+  .canvas { position: relative; transform-origin: 0 0; }
+  .hint { position: sticky; left: 12px; top: 10px; z-index: 2; width: max-content; font-size: 12px; color: var(--faint); padding: 4px 10px; background: var(--panel); border: 1px solid var(--node-edge); border-radius: 999px; }
+  svg.wires { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+  .wire { fill: none; stroke: var(--wire); stroke-width: 2; transition: stroke 0.2s, opacity 0.2s; }
+  .wire.model { stroke-dasharray: 5 5; }
+  .wire.dim { opacity: 0.18; }
+  .wire.on { stroke: var(--api); stroke-dasharray: 7 7; animation: flow 0.9s linear infinite; }
+  .wire.on.model { stroke: var(--model); }
+  @keyframes flow { to { stroke-dashoffset: -14; } }
+  .arrow { fill: var(--wire); }
+
+  .node { position: absolute; width: 150px; margin-left: -39px; display: grid; justify-items: center; gap: 6px;
+          text-align: center; background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer;
+          transition: opacity 0.2s; }
+  .node .box { width: 72px; height: 72px; border-radius: 12px; background: var(--node); border: 1.5px solid var(--node-edge);
+               display: grid; place-items: center; position: relative; transition: border-color 0.2s, box-shadow 0.2s; }
+  .node.trigger .box { border-radius: 36px 12px 12px 36px; }
+  .node svg.icon { width: 30px; height: 30px; stroke: var(--c); fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .node .name { font-weight: 500; font-size: 13px; line-height: 1.3; }
+  .node .sub { font: 11px/1.35 var(--mono); color: var(--muted); max-width: 150px; }
+  .node:hover .box { border-color: var(--c); }
+  .node.selected .box { border-color: var(--c); box-shadow: 0 0 0 4px color-mix(in srgb, var(--c) 22%, transparent); }
+  .node.dim { opacity: 0.28; }
+  .node .bolt { position: absolute; left: -18px; top: 26px; color: var(--api); font-size: 15px; }
+
+  .lane-label { position: absolute; font: 500 11px var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+
+  .tools { position: sticky; left: 12px; bottom: 0; display: flex; gap: 6px; padding: 12px; width: max-content; z-index: 2; }
+  .tools button { width: 36px; height: 36px; border-radius: 8px; background: var(--panel); border: 1px solid var(--node-edge);
+                  color: var(--text); font: 500 16px var(--sans); cursor: pointer; }
+  .tools button:hover { border-color: var(--api); }
+
+  aside { background: var(--panel); border: 1px solid var(--node-edge); border-radius: 12px; padding: 18px; display: grid; gap: 12px; }
+  aside .kind { font: 500 11px var(--sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--c); }
+  aside h2 { margin: 0; font-size: 18px; font-weight: 600; text-wrap: balance; }
+  aside p { margin: 0; color: var(--muted); }
+  aside ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+  aside code, .files { font: 12px/1.5 var(--mono); color: #ffcfb2; }
+  .files { background: #1a1a1f; border: 1px solid var(--node-edge); border-radius: 8px; padding: 8px 10px; overflow-wrap: anywhere; }
+  .tested { border-top: 1px solid var(--node-edge); padding-top: 10px; color: var(--text); }
+  .tested b { color: var(--output); font-weight: 600; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 12px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); display: inline-block; }
+  .legend .line { width: 22px; height: 0; border-top: 2px solid var(--wire); border-radius: 0; background: none; }
+  .legend .line.dash { border-top-style: dashed; border-color: var(--model); }
+
+  @media (max-width: 900px) { .stage { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) { .wire.on { animation: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>ExtractAI flow</h1>
+      <p class="lede">How a passport, Aadhaar card, PAN card or tax return goes from upload to structured data, all on a local AI model. Pick a path to follow it; click any node for details.</p>
+    </div>
+    <div class="chips" role="group" aria-label="Highlight a path">
+      <button class="chip" data-flow="all" aria-pressed="true" style="--c: var(--muted)"><i></i>Everything</button>
+      <button class="chip" data-flow="ui" aria-pressed="false" style="--c: var(--entry)"><i></i>Web page</button>
+      <button class="chip" data-flow="form" aria-pressed="false" style="--c: var(--output)"><i></i>n8n form → Google Sheet</button>
+      <button class="chip" data-flow="api" aria-pressed="false" style="--c: var(--api)"><i></i>API client</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="viewport" id="viewport">
+      <div class="hint">Drag or scroll to move around · ⤢ shows everything</div>
+      <div class="canvas" id="canvas">
+        <svg class="wires" id="wires" aria-hidden="true"></svg>
+      </div>
+      <div class="tools">
+        <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+        <button type="button" id="zoom-fit" aria-label="Fit to view">⤢</button>
+        <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+      </div>
+    </div>
+
+    <aside id="panel" aria-live="polite"></aside>
+  </div>
+
+  <div class="legend">
+    <span><i style="--c: var(--entry)"></i>Entry point</span>
+    <span><i style="--c: var(--api)"></i>API and security</span>
+    <span><i style="--c: var(--process)"></i>Processing</span>
+    <span><i style="--c: var(--model)"></i>Local AI model</span>
+    <span><i style="--c: var(--output)"></i>Output</span>
+    <span><i class="line"></i>Data</span>
+    <span><i class="line dash"></i>Model call</span>
+  </div>
+</div>
+
+<script>
+"use strict";
+const ICONS = {
+  browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/>',
+  form: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 10h6M9 14h6M9 18h3"/>',
+  terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10l3 2.5L7 15M12 15h5"/>',
+  route: '<path d="M4 7h10M4 17h10M14 4l3 3-3 3M14 14l3 3-3 3M20 7v10"/>',
+  shield: '<path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
+  download: '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/>',
+  pages: '<path d="M8 3h8l4 4v11a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M16 3v4h4M4 7v12a2 2 0 0 0 2 2h9"/>',
+  tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
+  cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3M10 10h4v4h-4z"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+  braces: '<path d="M9 4c-2 0-3 1-3 3v2c0 1.5-1 2.5-2 3 1 .5 2 1.5 2 3v2c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2c0 1.5 1 2.5 2 3-1 .5-2 1.5-2 3v2c0 2-1 3-3 3"/>',
+  wand: '<path d="M4 20L16 8M14 4v2M20 10h-2M18.5 5.5l-1.5 1.5M11 7l6 6"/>',
+  users: '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.2c2.8.2 5 2.6 5 5.8"/>',
+  json: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 6l-3 12"/>',
+  cards: '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M6 7.5h6M6 16.5h6"/>',
+  mask: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M6.5 12h2M10 12h2M13.5 12h1M16.5 10.5v3M16.5 10.5h1.5v1.5h-1.5"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M3 14h18M9 9v11M15 9v11"/>',
+  sheet: '<path d="M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M14 3v5h5M8.5 12h7M8.5 15.5h7M12 12v7"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 10"/>',
+  plug: '<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/>',
+};
+
+const C = { entry: "var(--entry)", api: "var(--api)", process: "var(--process)", model: "var(--model)", output: "var(--output)" };
+const KIND = { entry: "Entry point", api: "API and security", process: "Processing", model: "Local AI model", output: "Output" };
+
+// x, y are canvas positions of the 72px box's top-left corner.
+const NODES = [
+  { id: "ui", x: 60, y: 60, kind: "entry", icon: "browser", trigger: true, name: "Web page", sub: "/ui · files or URLs", flows: ["ui"],
+    what: "Plain HTML, CSS and JavaScript served by FastAPI. Drag in files or paste URLs, add an optional API key, and see results grouped by owner.",
+    points: ["Everything from the server is shown with textContent, never innerHTML", "Strict Content-Security-Policy on /ui", "Copy or download the raw JSON"],
+    files: "app/static/index.html · app.js · style.css", tested: "Driven in headless Chrome: real uploads grouped correctly; a hostile owner name stayed plain text." },
+  { id: "form", x: 60, y: 250, kind: "entry", icon: "form", trigger: true, name: "n8n form", sub: "localhost:5678/form", flows: ["form"],
+    what: "An n8n Form Trigger where someone uploads documents. n8n splits the upload into one item per file and calls the upload endpoint once per file.",
+    points: ["n8n runs locally in Docker, bound to 127.0.0.1", "The API key lives in an n8n credential", "3 tries per file, 10-minute timeout"],
+    files: "n8n/extractai-workflow.json · n8n/docker-compose.yml", tested: "Real runs: 2 and 3 documents extracted; a fake file and a wrong API key each became an error row." },
+  { id: "client", x: 60, y: 440, kind: "entry", icon: "terminal", trigger: true, name: "API client", sub: "curl · scripts · systems", flows: ["api"],
+    what: "Any program can call the API directly with JSON (URLs) or multipart (files).",
+    points: ["POST /document-check with 10–50 URLs", "POST /document-check/upload with 1–50 files", "Interactive docs at /docs"],
+    files: "README.md → API", tested: "Real server tested with curl: 200, 401, 413, 415, 422, 429 and 503 paths." },
+
+  { id: "urls", x: 280, y: 140, kind: "api", icon: "route", name: "POST /document-check", sub: "10–50 URLs (JSON)", flows: ["ui", "api"],
+    what: "Takes a JSON list of document URLs. Pydantic rejects fewer than 10 or more than 50, non-http(s) URLs and extra fields.",
+    points: ["422 errors never echo the submitted URLs (they may hold tokens)", "Responds with owners and their documents"],
+    files: "app/api/document_check.py · app/schemas/request.py", tested: "7 invalid-body cases return 422 with only type, loc and msg." },
+  { id: "upload", x: 280, y: 360, kind: "api", icon: "route", name: "POST /document-check/upload", sub: "1–50 files (multipart)", flows: ["ui", "form", "api"],
+    what: "Takes PDF, PNG or JPG files. The endpoint parses the body itself, after every check has passed.",
+    points: ["Content-Length required (411), 100 MB per request (413)", "Type decided by magic bytes, never by file name", "File names are never used or logged"],
+    files: "app/api/document_check.py · app/services/uploads.py", tested: "A real 120 MB upload was refused with 413 in 2 ms, before a single byte was sent." },
+  { id: "gate", x: 500, y: 250, kind: "api", icon: "shield", name: "Security gate", sub: "key · rate limit · 503", flows: ["ui", "form", "api"],
+    what: "Runs before the body is read: optional X-API-Key check, a per-client rate limit, and a check that the model is up.",
+    points: ["Keys compared in constant time and never logged", "Sliding window, 10 requests/minute, 429 with Retry-After", "503 before any download if Ollama is down"],
+    files: "app/api/security.py · app/main.py", tested: "33 tests; on a real server the key appeared 0 times in the log." },
+
+  { id: "fetch", x: 720, y: 250, kind: "process", icon: "download", name: "Fetch document", sub: "SSRF-safe download / upload", flows: ["ui", "form", "api"],
+    what: "Downloads each URL or saves each upload into a private temporary folder that is always deleted.",
+    points: ["Every resolved IP must be public, re-checked on each redirect", "Connects to the checked IP (no DNS rebinding)", "20 MB and 30 s limits; PDF/PNG/JPEG only"],
+    files: "app/services/downloader.py · app/utils/url_safety.py", tested: "22 SSRF cases blocked (localhost, 169.254.169.254, nip.io tricks…) plus 24 download cases." },
+  { id: "pages", x: 940, y: 250, kind: "process", icon: "pages", name: "PDF → page images", sub: "PyMuPDF · 100 DPI", flows: ["ui", "form", "api"],
+    what: "Renders PDF pages to PNG. Images pass through untouched.",
+    points: ["At most 10 pages, 4000 px per side", "Password-protected and broken PDFs rejected", "150 DPI tested: same accuracy, twice as slow"],
+    files: "app/utils/pdf.py", tested: "11 conversion cases, including a 200×200-inch page capped to 4000 px." },
+  { id: "classify", x: 1160, y: 250, kind: "process", icon: "tag", name: "Classify", sub: "type · name · owner", flows: ["ui", "form", "api"],
+    what: "Page 1 goes to the vision model, which returns the document name, its type and the owner's name. It must not guess.",
+    points: ["Name first, then type: grounds the choice", "Cross-check: the model's own document name overrules a wrong type", "passport · idCard (Aadhaar) · taxReturn · panCard · unknown"],
+    files: "app/services/classifier.py · app/schemas/classification.py", tested: "28/28, including a PAN card and a driving licence that were first mistaken for Aadhaar." },
+  { id: "ollama", x: 1270, y: 470, kind: "model", icon: "cpu", name: "Ollama · qwen3-vl", sub: "local vision model", flows: ["ui", "form", "api"],
+    what: "Qwen3-VL 8B running on this machine through Ollama. No document ever goes to a cloud AI service.",
+    points: ["JSON-schema output, temperature 0, validated by Pydantic", "Same system prompt for classify and extract: extract drops from 9 s to 3 s", "Oversized input detected instead of silently cut off"],
+    files: "app/services/ollama.py · app/services/prompts.py", tested: "About 14.5 s per document on a MacBook Air M4; 10/10 correct in benchmarks." },
+  { id: "registry", x: 1380, y: 250, kind: "process", icon: "layers", name: "Pipeline registry", sub: "type → extractor", flows: ["ui", "form", "api"],
+    what: "Looks up the extractor for the document type. A new type needs a pipeline class and one registry entry; the API doesn't change.",
+    points: ["unknown has no pipeline → data: null", "PAN card was added this way with 0 lines changed in the API"],
+    files: "app/pipelines/registry.py · app/pipelines/base.py", tested: "27 tests with fake pipelines, including adding a brand-new type." },
+  { id: "extract", x: 1600, y: 250, kind: "process", icon: "braces", name: "Extract fields", sub: "passport · Aadhaar · tax · PAN", flows: ["ui", "form", "api"],
+    what: "The type's pipeline asks the model for its fields. Page 1 first; more pages only when fields are still empty.",
+    points: ["Aadhaar up to 2 pages, tax returns up to 3", "Values copied exactly as printed", "Missing fields stay null"],
+    files: "app/pipelines/passport.py · aadhaar.py · tax_return.py · pan_card.py", tested: "Realistic documents: 7/7 and 37/37 fields correct, including a 5-page tax return." },
+  { id: "normalize", x: 1820, y: 250, kind: "process", icon: "wand", name: "Normalize", sub: "dates · numbers · amounts", flows: ["ui", "form", "api"],
+    what: "Code, not the model, turns printed values into consistent formats. Anything unrecognised is kept as printed.",
+    points: ["15 MAY 1985 → 1985-05-15", "2345 6789 0123 → 2345-6789-0123", "₹ 5,00,000/- → 500000"],
+    files: "app/utils/normalize.py · app/schemas/extraction.py", tested: "43 format and schema tests." },
+  { id: "group", x: 2040, y: 250, kind: "process", icon: "users", name: "Group by owner", sub: "case-insensitive", flows: ["ui", "form", "api"],
+    what: "Puts each person's documents together. \"John Doe\" and \"JOHN DOE\" match; \"Jon Doe\" stays separate (no guessing).",
+    points: ["Documents without an owner go in a last group", "One bad document never fails the batch"],
+    files: "app/services/grouping.py · app/services/document_processor.py", tested: "13 grouping tests; 2 documents at a time with a model lock." },
+  { id: "response", x: 2260, y: 250, kind: "api", icon: "json", name: "JSON response", sub: "owners → documents → data", flows: ["ui", "form", "api"],
+    what: "One entry per owner, each with its documents: type, name, extracted data, position in the request and any error.",
+    points: ["data is an object, null when not extracted", "Errors never include full URLs or document text"],
+    files: "app/schemas/response.py", tested: "End to end: a 13-document request with every failure type." },
+
+  { id: "results", x: 2480, y: 60, kind: "output", icon: "cards", name: "Results on page", sub: "cards · JSON export", flows: ["ui"],
+    what: "The web page shows a card per owner with each document's fields, plus Copy and Download JSON.",
+    points: ["Plain-language messages for 401, 429, 503, 413 and 422"], files: "app/static/app.js", tested: "Checked in light and dark mode and at phone width." },
+  { id: "yours", x: 2480, y: 440, kind: "output", icon: "plug", name: "Your system", sub: "any consumer", flows: ["api"],
+    what: "The JSON goes wherever the calling program needs it.", points: ["Match results to inputs by sourceIndex"], files: "README.md → Response rules", tested: "" },
+  { id: "rows", x: 2480, y: 250, kind: "output", icon: "mask", name: "Rows (Aadhaar masked)", sub: "n8n Code node", flows: ["form"],
+    what: "n8n turns each document into a row and masks Aadhaar numbers before anything leaves the machine.",
+    points: ["2345-6789-0123 → XXXX-XXXX-0123", "Errors shortened, e.g. HTTP 401: missing or invalid API key"],
+    files: "n8n/extractai-workflow.json → Rows for Sheets", tested: "Rows checked field by field in real runs." },
+  { id: "table", x: 2700, y: 250, kind: "output", icon: "table", name: "n8n Data Table", sub: "local copy · CSV export", flows: ["form"],
+    what: "Every row is saved in n8n's own table first, so nothing is lost if Google is unreachable.",
+    points: ["Stays on this machine", "Execution data deleted after 24 hours"], files: "n8n/docker-compose.yml", tested: "Rows and CSV export verified." },
+  { id: "sheet", x: 2920, y: 250, kind: "output", icon: "sheet", name: "Google Sheet", sub: "via Apps Script", flows: ["form"],
+    what: "All rows go to a Google Apps Script web app in one request, which appends them to the sheet.",
+    points: ["A secret token, kept in an n8n credential", "Values starting with = + - @ can't become formulas", "No Google Cloud project needed"],
+    files: "n8n/google-apps-script.gs", tested: "Real run: 2 rows added; with a wrong token the run still finished and said so." },
+  { id: "summary", x: 3140, y: 250, kind: "output", icon: "check", name: "Summary page", sub: "n8n Form ending", flows: ["form"],
+    what: "The person who uploaded sees who owns what, any problems, and whether the sheet was updated.",
+    points: ["Text from documents is HTML-escaped"], files: "n8n/extractai-workflow.json → Summary", tested: "“JOHN DOE: Passport | SARA LEE: PAN card | Google Sheet: 2 rows added”" },
+];
+
+const ALL = ["ui", "form", "api"];
+const EDGES = [
+  ["ui", "urls", ["ui"]], ["ui", "upload", ["ui"]], ["form", "upload", ["form"]],
+  ["client", "urls", ["api"]], ["client", "upload", ["api"]],
+  ["urls", "gate", ["ui", "api"]], ["upload", "gate", ALL],
+  ["gate", "fetch", ALL], ["fetch", "pages", ALL], ["pages", "classify", ALL], ["classify", "registry", ALL],
+  ["registry", "extract", ALL], ["extract", "normalize", ALL], ["normalize", "group", ALL], ["group", "response", ALL],
+  ["classify", "ollama", ALL, "model"], ["ollama", "extract", ALL, "model"],
+  ["response", "results", ["ui"]], ["response", "yours", ["api"]], ["response", "rows", ["form"]],
+  ["rows", "table", ["form"]], ["table", "sheet", ["form"]], ["sheet", "summary", ["form"]],
+];
+// Column of each node, left to right; x = column * STEP.
+const COL = { ui: 0, form: 0, client: 0, urls: 1, upload: 1, gate: 2, fetch: 3, pages: 4, classify: 5, ollama: 5.5,
+  registry: 6, extract: 7, normalize: 8, group: 9, response: 10, results: 11, rows: 11, yours: 11, table: 12, sheet: 13, summary: 14 };
+const STEP = 175, LEFT = 60;
+for (const node of NODES) node.x = LEFT + COL[node.id] * STEP;
+const LANES = [
+  { col: 0, text: "Entry" }, { col: 1, text: "API" }, { col: 3, text: "Processing" }, { col: 11, text: "Output" },
+].map((lane) => ({ x: LEFT - 20 + lane.col * STEP, text: lane.text }));
+
+const BOX = 72, W = LEFT + 14 * STEP + 150, H = 600;
+const canvas = document.getElementById("canvas");
+const wires = document.getElementById("wires");
+const panel = document.getElementById("panel");
+const byId = Object.fromEntries(NODES.map((n) => [n.id, n]));
+let flow = "all", selected = "classify", zoom = 1;
+
+canvas.style.width = W + "px";
+canvas.style.height = H + "px";
+wires.setAttribute("viewBox", `0 0 ${W} ${H}`);
+wires.setAttribute("width", W);
+wires.setAttribute("height", H);
+
+for (const lane of LANES) {
+  const label = document.createElement("div");
+  label.className = "lane-label";
+  label.style.left = lane.x + "px";
+  label.style.top = "18px";
+  label.textContent = lane.text;
+  canvas.append(label);
+}
+
+for (const node of NODES) {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.className = "node" + (node.trigger ? " trigger" : "");
+  el.dataset.id = node.id;
+  el.style.left = node.x + "px";
+  el.style.top = node.y + "px";
+  el.style.setProperty("--c", C[node.kind]);
+  el.setAttribute("aria-label", `${node.name}: ${node.sub}`);
+  const box = document.createElement("span");
+  box.className = "box";
+  box.innerHTML = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[node.icon]}</svg>`;
+  if (node.trigger) {
+    const bolt = document.createElement("span");
+    bolt.className = "bolt";
+    bolt.textContent = "⚡";
+    bolt.setAttribute("aria-hidden", "true");
+    box.append(bolt);
+  }
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = node.name;
+  const sub = document.createElement("span");
+  sub.className = "sub";
+  sub.textContent = node.sub;
+  el.append(box, name, sub);
+  el.addEventListener("click", () => select(node.id));
+  canvas.append(el);
+}
+
+function port(node, side) {
+  if (side === "right") return [node.x + BOX, node.y + BOX / 2];
+  if (side === "left") return [node.x, node.y + BOX / 2];
+  if (side === "bottom") return [node.x + BOX / 2, node.y + BOX];
+  return [node.x + BOX / 2, node.y];
+}
+
+function drawWires() {
+  wires.replaceChildren();
+  const ns = "http://www.w3.org/2000/svg";
+  for (const [from, to, flows, type] of EDGES) {
+    const a = byId[from], b = byId[to];
+    let d;
+    if (type === "model" && to === "ollama") {
+      const [x1, y1] = port(a, "bottom"), [x2, y2] = port(b, "left");
+      d = `M${x1},${y1} C${x1},${y2} ${x2 - 60},${y2} ${x2},${y2}`;
+    } else if (type === "model") {
+      const [x1, y1] = port(a, "right"), [x2, y2] = port(b, "bottom");
+      d = `M${x1},${y1} C${x2},${y1} ${x2},${y2 + 60} ${x2},${y2}`;
+    } else {
+      const [x1, y1] = port(a, "right"), [x2, y2] = port(b, "left");
+      const bend = Math.max(40, (x2 - x1) / 2);
+      d = `M${x1},${y1} C${x1 + bend},${y1} ${x2 - bend},${y2} ${x2},${y2}`;
+    }
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", d);
+    const active = flow === "all" ? false : flows.includes(flow);
+    path.setAttribute("class", `wire${type === "model" ? " model" : ""}${active ? " on" : ""}${flow !== "all" && !active ? " dim" : ""}`);
+    wires.append(path);
+  }
+}
+
+function applyFlow() {
+  document.querySelectorAll(".chip").forEach((chip) => chip.setAttribute("aria-pressed", String(chip.dataset.flow === flow)));
+  document.querySelectorAll(".node").forEach((el) => {
+    const node = byId[el.dataset.id];
+    el.classList.toggle("dim", flow !== "all" && !node.flows.includes(flow));
+  });
+  drawWires();
+}
+
+function select(id) {
+  selected = id;
+  const node = byId[id];
+  document.querySelectorAll(".node").forEach((el) => el.classList.toggle("selected", el.dataset.id === id));
+  panel.style.setProperty("--c", C[node.kind]);
+  panel.replaceChildren();
+  const add = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text) el.textContent = text; panel.append(el); return el; };
+  add("div", "kind", KIND[node.kind]);
+  add("h2", "", node.name);
+  add("p", "", node.what);
+  const list = add("ul");
+  for (const point of node.points) { const li = document.createElement("li"); li.textContent = point; list.append(li); }
+  add("div", "files", node.files);
+  if (node.tested) {
+    const tested = add("p", "tested");
+    const label = document.createElement("b");
+    label.textContent = "Tested: ";
+    tested.append(label, node.tested);
+  }
+}
+
+function setZoom(value) {
+  zoom = Math.min(1.4, Math.max(0.3, value));
+  canvas.style.transform = `scale(${zoom})`;
+  canvas.parentElement.style.setProperty("--z", zoom);
+  canvas.style.marginRight = `${W * (zoom - 1)}px`;
+  canvas.style.marginBottom = `${H * (zoom - 1)}px`;
+}
+
+function fit() {
+  const viewport = document.getElementById("viewport");
+  setZoom(Math.min(1, (viewport.clientWidth - 24) / W));
+  viewport.scrollTo({ left: 0, top: 0 });
+}
+
+// Drag the canvas to pan, like the n8n editor.
+const viewport = document.getElementById("viewport");
+let drag = null;
+viewport.addEventListener("pointerdown", (e) => {
+  if (e.target.closest(".node, .tools, button")) return;
+  drag = { x: e.clientX, y: e.clientY, left: viewport.scrollLeft, top: viewport.scrollTop };
+  viewport.classList.add("dragging");
+  viewport.setPointerCapture(e.pointerId);
+});
+viewport.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  viewport.scrollLeft = drag.left - (e.clientX - drag.x);
+  viewport.scrollTop = drag.top - (e.clientY - drag.y);
+});
+const endDrag = () => { drag = null; viewport.classList.remove("dragging"); };
+viewport.addEventListener("pointerup", endDrag);
+viewport.addEventListener("pointercancel", endDrag);
+
+document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => { flow = chip.dataset.flow; applyFlow(); }));
+document.getElementById("zoom-in").addEventListener("click", () => setZoom(zoom + 0.1));
+document.getElementById("zoom-out").addEventListener("click", () => setZoom(zoom - 0.1));
+document.getElementById("zoom-fit").addEventListener("click", fit);
+
+applyFlow();
+select(selected);
+setZoom(0.75);
+</script>
+
+</body>
+</html>
