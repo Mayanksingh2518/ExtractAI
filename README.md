@@ -172,30 +172,32 @@ Plain HTML, CSS and JavaScript in `app/static/` (no framework, no build step), s
 
 ## n8n workflow
 
-`n8n/` holds a ready-made [n8n](https://n8n.io) automation: **an n8n form where someone uploads documents → ExtractAI extracts the data → one row per document in n8n's built-in table (and in Google Sheets once connected) → a summary page for the person who uploaded**.
+`n8n/` holds a ready-made [n8n](https://n8n.io) automation: **someone uploads documents on an n8n form → ExtractAI extracts the data → one row per document in n8n's built-in table and in a Google Sheet → a summary page for the person who uploaded**.
 
 ```
 Upload documents (n8n Form) → One item per file (Code) → ExtractAI: extract data (HTTP, X-API-Key)
-  → Rows for Sheets (Code: Aadhaar masked) → Google Sheets: append rows (off until connected)
-  → Save to n8n table (Data Table "ExtractAI results") → Summary (Code) → Show result (Form ending)
+  → Rows for Sheets (Code: Aadhaar masked) → Save to n8n table (Data Table "ExtractAI results")
+  → Google Sheet: append rows (HTTP → Apps Script, one request) → Summary (Code) → Show result (Form ending)
 ```
 
 **Run it locally:**
 1. Start ExtractAI: `uvicorn app.main:app` (set `API_KEYS` in `.env` if you want the key checked).
 2. Start n8n: `docker compose -f n8n/docker-compose.yml up -d`, open http://localhost:5678 and create your account.
 3. **Workflows → Import from file →** `n8n/extractai-workflow.json`.
-4. Create a **Header Auth** credential named `ExtractAI API key` (name `X-API-Key`, value = one of your `API_KEYS`) and select it in the *ExtractAI: extract data* node.
-5. In n8n, create a **Data table** named `ExtractAI results` with text columns `processedAt, file, owner, type, documentName, idNumber, dateOfBirth, details, error`.
-6. Publish the workflow and open the form at http://localhost:5678/form/extractai. Results land in the data table (download it as CSV from n8n at any time).
-7. **Optional, Google Sheets:** create a Google Cloud OAuth client (Sheets + Drive API, redirect URI `http://localhost:5678/rest/oauth2-credential/callback`), add a *Google Sheets OAuth2 API* credential in n8n, create a sheet whose row 1 holds the column names below, select both in the *Google Sheets: append rows* node and enable it.
+4. Credentials: **Header Auth** `ExtractAI API key` (name `X-API-Key`, value = one of your `API_KEYS`), and **Custom Auth** `Google Sheet token` with `{"body": {"token": "<your token>"}}`.
+5. Create a **Data table** named `ExtractAI results` with text columns `processedAt, file, owner, type, documentName, idNumber, dateOfBirth, details, error`.
+6. **Google Sheet:** in your sheet, *Extensions → Apps Script*, paste `n8n/google-apps-script.gs`, set the same token, and *Deploy → Web app* (Execute as: Me, Who has access: **Anyone**). Put the `/exec` URL in the *Google Sheet: append rows* node.
+7. Publish the workflow and open the form at http://localhost:5678/form/extractai
 
 **How it's built:**
 - n8n runs in Docker, bound to `127.0.0.1`, and reaches the API on the Mac through `host.docker.internal`.
 - n8n's HTTP node sends one binary field per request, so the upload is split into **one request per file**, each with retries and a 10-minute timeout. A failed file becomes an error row and never stops the others.
-- **Aadhaar numbers are masked** (`XXXX-XXXX-1234`) before the rows leave the machine for Google Sheets. Text from documents is HTML-escaped on the result page.
-- n8n stores each run's uploaded files and results, so the compose file **deletes execution data after 24 hours** (`EXECUTIONS_DATA_MAX_AGE=24`), and successful runs aren't saved at all.
+- **Aadhaar numbers are masked** (`XXXX-XXXX-1234`) before rows leave the machine. Text from documents is HTML-escaped on the result page, and the Apps Script prefixes values starting with `=`, `+`, `-` or `@` so they can't become spreadsheet formulas.
+- **Why Apps Script instead of n8n's Google Sheets node:** no Google Cloud project or OAuth client is needed, just a script deployed from the sheet itself. The script checks a secret token, which n8n keeps in a credential (never in the workflow file).
+- The local table is written first. If the sheet can't be reached, the run still finishes and the summary says *"Google Sheet: not updated (saved in n8n only)"*.
+- n8n stores each run's uploaded files and results, so the compose file **deletes execution data after 24 hours**, and successful runs aren't saved at all.
 
-**Sheet columns:** Processed at · File · Owner · Type · Document name · ID number · Date of birth · Details · Error.
+**Columns:** Processed at · File · Owner · Type · Document name · ID number · Date of birth · Details · Error.
 
 ## Constraints and limits
 
@@ -397,4 +399,4 @@ The project was built one tested stage at a time. Stages 1–12 cover the origin
 | 17 | pytest | Old test scripts converted to `tests/` (pytest is dev-only); `model` and `network` markers | `pytest`: 177 offline tests in 16 s. `pytest -m ""`: **251 passed**. Deliberately broken code made the tests fail |
 | 18 | File upload | `POST /document-check/upload` (1–50 files, multipart); the processor fetches each document by download or by saving the upload, and the rest of the flow is shared | 22 tests; a real 120 MB upload refused with 413 before a byte was sent; file names logged 0 times |
 | 19 | Web page | Plain HTML/CSS/JS at `/ui/`: upload and URL tabs, API key field, progress timer, results grouped by owner, JSON export, light/dark, phone layout; strict CSP | 11 tests; driven in headless Chrome: real uploads grouped correctly, 401/429/503 explained, a hostile owner name shown as text (no script ran), no CSP violations, no horizontal scroll at 390 px |
-| 20 | n8n workflow | Local n8n (Docker) with Form → ExtractAI → rows (Aadhaar masked) → Google Sheets → summary page; importable JSON; 24 h execution pruning | Real runs: 2 and 3 documents grouped and extracted, a fake file and a wrong API key each became an error row without stopping the run |
+| 20 | n8n workflow | Local n8n (Docker): Form → ExtractAI → rows (Aadhaar masked) → n8n table + Google Sheet (via Apps Script) → summary page; importable JSON; 24 h execution pruning | Real runs: 2 and 3 documents grouped and extracted, a fake file and a wrong API key each became an error row without stopping the run |

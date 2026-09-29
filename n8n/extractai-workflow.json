@@ -117,7 +117,7 @@
       ],
       "parameters": {
         "language": "javaScript",
-        "jsCode": "// Text for the form's last page. Values come from documents, so escape them.\nconst esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst rows = $('Rows for Sheets').all().map((i) => i.json);\nconst owners = new Map();\nfor (const r of rows) {\n  if (r.Error && !r.Owner) continue;\n  const key = (r.Owner || 'No owner found').toLowerCase();\n  if (!owners.has(key)) owners.set(key, { name: r.Owner || 'No owner found', types: [] });\n  owners.get(key).types.push(r.Type);\n}\nconst problems = rows.filter((r) => r.Error);\nconst lines = [...owners.values()].map((o) => `${esc(o.name)}: ${esc(o.types.join(', '))}`);\nif (problems.length) lines.push(`Problems: ${problems.map((r) => `${esc(r.File)} (${esc(r.Error)})`).join('; ')}`);\nreturn [{ json: { title: `${rows.length} document${rows.length === 1 ? '' : 's'} processed`, message: lines.join(' | ') || 'No documents' } }];"
+        "jsCode": "// Text for the form's last page. Values come from documents, so escape them.\nconst esc = (s) => String(s).replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c]));\nconst rows = $('Rows for Sheets').all().map((i) => i.json);\nconst owners = new Map();\nfor (const r of rows) {\n  if (r.Error && !r.Owner) continue;\n  const key = (r.Owner || 'No owner found').toLowerCase();\n  if (!owners.has(key)) owners.set(key, { name: r.Owner || 'No owner found', types: [] });\n  owners.get(key).types.push(r.Type);\n}\nconst problems = rows.filter((r) => r.Error);\nconst lines = [...owners.values()].map((o) => `${esc(o.name)}: ${esc(o.types.join(', '))}`);\nif (problems.length) lines.push(`Problems: ${problems.map((r) => `${esc(r.File)} (${esc(r.Error)})`).join('; ')}`);\nconst sheet = $('Google Sheet: append rows').first().json;\nlines.push(sheet.ok ? `Google Sheet: ${sheet.added} row${sheet.added === 1 ? '' : 's'} added` : 'Google Sheet: not updated (saved in n8n only)');\nreturn [{ json: { title: `${rows.length} document${rows.length === 1 ? '' : 's'} processed`, message: lines.join(' | ') || 'No documents' } }];"
       }
     },
     {
@@ -138,47 +138,12 @@
       }
     },
     {
-      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000005",
-      "name": "Google Sheets: append rows",
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
-      "position": [
-        960,
-        0
-      ],
-      "disabled": true,
-      "notes": "Off until connected: pick your 'Google Sheets OAuth2 API' credential and the 'ExtractAI results' sheet (row 1 = the column names), then enable this node. While disabled, rows pass straight through.",
-      "notesInFlow": true,
-      "parameters": {
-        "authentication": "oAuth2",
-        "resource": "sheet",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "mode": "url",
-          "value": ""
-        },
-        "sheetName": {
-          "__rl": true,
-          "mode": "name",
-          "value": "Sheet1"
-        },
-        "columns": {
-          "mappingMode": "autoMapInputData",
-          "value": {},
-          "matchingColumns": [],
-          "schema": []
-        },
-        "options": {}
-      }
-    },
-    {
       "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000008",
       "name": "Save to n8n table",
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1.1,
       "position": [
-        1200,
+        960,
         0
       ],
       "parameters": {
@@ -298,6 +263,41 @@
         },
         "options": {}
       }
+    },
+    {
+      "id": "7d0c7a2e-1f1a-4c7e-9a01-000000000005",
+      "name": "Google Sheet: append rows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "notes": "Sends all rows in one request to the Apps Script web app in n8n/google-apps-script.gs. Set the URL to your deployment's /exec URL; the 'Google Sheet token' credential (Custom Auth) adds the token to the body.",
+      "notesInFlow": true,
+      "credentials": {
+        "httpCustomAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheet token"
+        }
+      },
+      "parameters": {
+        "method": "POST",
+        "url": "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpCustomAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ rows: $('Rows for Sheets').all().map(item => item.json) }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      }
     }
   ],
   "connections": {
@@ -338,7 +338,7 @@
       "main": [
         [
           {
-            "node": "Google Sheets: append rows",
+            "node": "Save to n8n table",
             "type": "main",
             "index": 0
           }
@@ -356,18 +356,18 @@
         ]
       ]
     },
-    "Google Sheets: append rows": {
+    "Save to n8n table": {
       "main": [
         [
           {
-            "node": "Save to n8n table",
+            "node": "Google Sheet: append rows",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Save to n8n table": {
+    "Google Sheet: append rows": {
       "main": [
         [
           {

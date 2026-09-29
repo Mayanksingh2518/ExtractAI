@@ -3,7 +3,7 @@
 **This file is the single source of truth for the project.** It records the task, the rules, what has been built and tested, and the exact next step.
 On any machine or in any new session, reading this file should be enough to carry on without anyone explaining the context again.
 
-_Last updated: 2026-09-28 (Stage 20 done; Google Sheets optional, needs the user's Google sign-in)_
+_Last updated: 2026-09-29 (all 20 stages done, Google Sheet connected)_
 
 ---
 
@@ -609,7 +609,13 @@ Items are ticked only once they have been **built and tested**.
   - Order: Rows for Sheets → Google Sheets (off) → Save to n8n table → Summary. The table node reads from `$('Rows for Sheets')`, so it works whether Sheets is on or off
   - **Tested:** passport + Aadhaar → result page *"JOHN DOE: Passport | MARIA DOE: Aadhaar"*, **2 rows in the n8n table** (Aadhaar `XXXX-XXXX-0123`), CSV download works. **Bug found and fixed:** "Processed at" was UTC (`new Date().toISOString()`); now `$now.toFormat(...)` in n8n's timezone (Asia/Kolkata), checked: 23:30 matched the clock. Test executions deleted; the 3 fake test rows were left in the table as examples
 - [x] The user created a Google Sheet (2026-09-28). In the **local** n8n workflow, the *Google Sheets: append rows* node now points at it (first tab, gid 0); still disabled. **The sheet URL is deliberately not in the repo**: `n8n/extractai-workflow.json` stays generic
-- [ ] **Google Sheets (user):** paste the 9 column names into row 1, create the Google Cloud OAuth client, add the *Google Sheets OAuth2 API* credential in n8n, select it in the node and enable it (steps in README "n8n workflow"); then run one test upload and check the rows appear in the sheet
+- [x] **Google Sheet connected through Google Apps Script** (user asked me to do it; the only manual part was pasting the script and deploying it, which needs their Google sign-in)
+  - **Decision: Apps Script web app instead of n8n's Google Sheets node:** no Google Cloud project, OAuth client or consent-screen setup. `n8n/google-apps-script.gs`: `doPost` checks a token, adds the header row to an empty sheet, appends all rows in one `setValues`, and **prefixes values starting with `=`, `+`, `-`, `@` with an apostrophe** (no formula injection from document text)
+  - Token kept in an n8n **Custom Auth credential** `Google Sheet token` (`{"body": {"token": ...}}`), never in the workflow file. The real token and deployment URL exist only in the local n8n and the user's script; the repo has placeholders (checked: 0 occurrences)
+  - Workflow: Rows for Sheets → Save to n8n table → **Google Sheet: append rows** (HTTP POST, *Execute Once*, all rows in one request, 2 tries, on error continue) → Summary, which now ends with *"Google Sheet: N rows added"* or *"not updated (saved in n8n only)"*. The disabled Google Sheets node was removed
+  - **Deployment problems the user hit, with the fixes:** (1) Apps Script failing with several Google accounts signed in (`authuser=2`) → use a window with only the sheet's account; (2) the "Google hasn't verified this app" page → *Advanced → Go to project (unsafe) → Allow*; (3) **HTTP 401 "unable to open the file"** → the deployment's *Who has access* must be **Anyone** (then 302 → JSON)
+  - Testing note: `curl -X POST -L` re-POSTs to Google's redirect page and gets an HTML error; plain `--data -L` (and n8n) follow the 302 with GET correctly
+  - **Tested:** wrong token → `{"ok":false,"error":"unauthorized"}`; right token + 0 rows → `{"ok":true,"added":0}`; **real run: passport + PAN card → result page "JOHN DOE: Passport | SARA LEE: PAN card | Google Sheet: 2 rows added", script replied `{"ok": true, "added": 2}`**; wrong token in the credential → run finished, *"Google Sheet: not updated (saved in n8n only)"*, token restored. Test executions deleted
 
 ---
 
@@ -622,7 +628,8 @@ app/api/document_check.py      POST /document-check (URLs) and POST /document-ch
 app/static/                    the web page at /ui/: index.html, style.css, app.js (textContent only), favicon.svg
 docs/screenshot.png            README screenshot (fake documents)
 n8n/docker-compose.yml         local n8n 2.x (127.0.0.1:5678, host.docker.internal, 24 h pruning)
-n8n/extractai-workflow.json    importable workflow: Form -> ExtractAI -> rows (Aadhaar masked) -> [Google Sheets] -> summary page
+n8n/extractai-workflow.json    importable workflow: Form -> ExtractAI -> rows (Aadhaar masked) -> n8n table -> Google Sheet (Apps Script) -> summary page
+n8n/google-apps-script.gs      Apps Script web app for the sheet: token check, header row, append, formula-injection guard (token placeholder)
 n8n/.login.txt                 local n8n login (gitignored)
 app/services/uploads.py        save_upload(): uploaded file -> workspace, size cap, type from magic bytes
 app/api/security.py            optional X-API-Key auth + RateLimiter (sliding window per key / IP)
@@ -666,7 +673,7 @@ PROGRESS.md                    this file
 
 ## 7. Current state and next action
 
-**Status: Stages 1–20 are done and pushed.** The n8n workflow saves results to n8n's own table; the Google Sheets node is ready but switched off until the user connects their Google account. The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
+**Status: Stages 1–20 are done and pushed.** The n8n workflow saves every result to n8n's own table and to the user's Google Sheet (through an Apps Script web app). The brief (Stages 1–12), the 5 follow-ups (13–17), and the frontend (18: upload endpoint, 19: web page at `/ui/`).
 
 **To use it:** `source .venv/bin/activate && uvicorn app.main:app`, then open http://127.0.0.1:8000/ui/
 
